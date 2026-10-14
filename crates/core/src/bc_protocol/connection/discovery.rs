@@ -25,7 +25,7 @@ use tokio::{
     net::UdpSocket,
     sync::{
         mpsc::{channel, Receiver, Sender},
-        RwLock, Semaphore,
+        OwnedSemaphorePermit, RwLock, Semaphore, TryAcquireError,
     },
     task::JoinSet,
     time::{interval, timeout, Duration},
@@ -94,7 +94,19 @@ lazy_static! {
         std::env::var("NEOLINK_TUNNEL_HANDSHAKE").as_deref(),
         Ok("0") | Ok("false") | Ok("off")
     );
+    /// See `confirm_to_register`
+    static ref ASYNC_REGISTER_CONFIRM: bool = env_enabled("NEOLINK_ASYNC_REGISTER_CONFIRM");
+    /// See `claim_confirmed`
+    static ref DISC_ON_LOST_RACE: bool = env_enabled("NEOLINK_DISC_ON_LOST_RACE");
 
+}
+
+/// Switches for field testing: on unless the variable is `0`, `false` or `off`
+fn env_enabled(name: &str) -> bool {
+    !matches!(
+        std::env::var(name).as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    )
 }
 
 type Subscriber = Arc<RwLock<BTreeMap<u32, Sender<Result<(UdpDiscovery, SocketAddr)>>>>>;
@@ -383,6 +395,85 @@ impl Discoverer {
         }
 
         Ok(())
+    }
+
+    /// Send C2R_CFM to the register once the camera has confirmed.
+    ///
+    /// The first send is made before returning and the resends run in a detached
+    /// task with its own writer, since the Discoverer (and its writer) is dropped as
+    /// soon as this method wins. Blocking for the resends left the camera without a
+    /// packet from us for ~2s after its confirm. `NEOLINK_ASYNC_REGISTER_CONFIRM=0`
+    /// restores the blocking `send_and_forget`.
+    async fn confirm_to_register(&self, mut disc: UdpDiscovery, dest: SocketAddr) -> Result<()> {
+        if !*ASYNC_REGISTER_CONFIRM {
+            return self.send_and_forget(disc, dest).await;
+        }
+        if disc.tid == 0 {
+            disc.tid = generate_tid();
+        }
+        log::debug!(
+            "Discovery tx {} (tid {}) to {}",
+            payload_kind(&disc.payload),
+            disc.tid,
+            dest
+        );
+        let msg = BcUdp::Discovery(disc);
+        let mut sender = ArcFramedSocket::new(self.socket.clone(), BcUdpCodex::new());
+        sender.send((msg.clone(), dest)).await?;
+        tokio::task::spawn(async move {
+            let mut inter = interval(*RESEND_WAIT);
+            inter.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            inter.tick().await; // The first tick is immediate and was sent above
+            for _i in 0..4 {
+                inter.tick().await;
+                if let Err(e) = sender.send((msg.clone(), dest)).await {
+                    log::debug!("Register confirm resend to {} failed: {:?}", dest, e);
+                    break;
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Take the discovery permit for a connection the camera has already confirmed.
+    ///
+    /// If another method holds the permit or has already won, waiting would leave
+    /// the camera with a confirmed session nobody uses (or start it seconds late),
+    /// so tell the camera with C2D_DISC and give up. `NEOLINK_DISC_ON_LOST_RACE=0`
+    /// restores waiting for the permit.
+    async fn claim_confirmed(&self, result: &ConnectResult) -> Result<OwnedSemaphorePermit> {
+        if !*DISC_ON_LOST_RACE {
+            return self
+                .semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Other("Discovery already complete"));
+        }
+        let reason = match self.semaphore.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(TryAcquireError::Closed) => "already connected",
+            Err(TryAcquireError::NoPermits) => "is still connecting",
+        };
+        log::info!(
+            "Camera at {} confirmed (did {}) but another discovery method {}, disconnecting it",
+            result.addr,
+            result.camera_id,
+            reason
+        );
+        // Own writer: the Discoverer's may stop at any moment once another method won
+        let msg = BcUdp::Discovery(UdpDiscovery {
+            tid: generate_tid(),
+            payload: UdpXml::C2dDisc(C2dDisc {
+                cid: result.client_id,
+                did: result.camera_id,
+            }),
+        });
+        let mut sender = ArcFramedSocket::new(self.socket.clone(), BcUdpCodex::new());
+        if let Err(e) = sender.send((msg, result.addr)).await {
+            log::debug!("C2D_DISC to {} failed: {:?}", result.addr, e);
+        }
+        Err(Error::Other("Discovery claimed by another method"))
     }
 
     async fn client_initiated_direct(
@@ -749,19 +840,14 @@ impl Discoverer {
             })
             .await??;
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Other("Discovery already complete"))?;
-
         let result = ConnectResult {
             addr,
             client_id: register_result.client_id,
             sid: register_result.sid,
             camera_id: local_did,
         };
+
+        let permit = self.claim_confirmed(&result).await?;
 
         // Confirm to register with the connection type the camera confirmed. Through
         // a VPN tunnel the camera answers a "local" D2C_T with a "map" D2C_CFM, and
@@ -777,7 +863,7 @@ impl Discoverer {
             }),
         };
 
-        self.send_and_forget(msg, register_result.reg).await?;
+        self.confirm_to_register(msg, register_result.reg).await?;
 
         self.keep_alive_device(local_tid, &result).await;
 
@@ -900,19 +986,14 @@ impl Discoverer {
             })
             .await??;
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Other("Discovery already complete"))?;
-
         let result = ConnectResult {
             addr,
             client_id: register_result.client_id,
             sid: register_result.sid,
             camera_id: local_did,
         };
+
+        let permit = self.claim_confirmed(&result).await?;
 
         // Confirm to register with the connection type the camera confirmed. Through
         // a VPN tunnel the camera answers a "local" D2C_T with a "map" D2C_CFM, and
@@ -928,7 +1009,7 @@ impl Discoverer {
             }),
         };
 
-        self.send_and_forget(msg, register_result.reg).await?;
+        self.confirm_to_register(msg, register_result.reg).await?;
 
         self.keep_alive_device(local_tid, &result).await;
 
@@ -973,12 +1054,7 @@ impl Discoverer {
             camera_id: local_did,
         };
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Other("Discovery already complete"))?;
+        let permit = self.claim_confirmed(&result).await?;
         // Confirm local to register
         let msg = UdpDiscovery {
             tid: 0,
@@ -991,7 +1067,7 @@ impl Discoverer {
             }),
         };
 
-        self.send_and_forget(msg, register_result.reg).await?;
+        self.confirm_to_register(msg, register_result.reg).await?;
 
         self.keep_alive_device(tid, &result).await;
 
@@ -1069,7 +1145,7 @@ impl Discoverer {
             }),
         };
 
-        self.send_and_forget(msg, register_result.reg).await?;
+        self.confirm_to_register(msg, register_result.reg).await?;
 
         self.keep_alive_device(tid, &result).await;
         // self.keep_alive_relay(tid, &result).await;
@@ -1453,6 +1529,102 @@ async fn connect() -> Result<UdpSocket> {
     socket.set_broadcast(true)?;
 
     Ok(socket)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
+
+    /// A camera or register on localhost
+    async fn peer() -> Result<(UdpFramed<BcUdpCodex, UdpSocket>, SocketAddr)> {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = socket.local_addr()?;
+        Ok((UdpFramed::new(socket, BcUdpCodex::new()), addr))
+    }
+
+    async fn recv(peer: &mut UdpFramed<BcUdpCodex, UdpSocket>) -> Result<BcUdp> {
+        let (packet, _) = timeout(Duration::from_secs(1), peer.next())
+            .await?
+            .ok_or(Error::ConnectionUnavailable)??;
+        Ok(packet)
+    }
+
+    #[tokio::test]
+    async fn test_lost_race_disconnects_camera() -> Result<()> {
+        if !*DISC_ON_LOST_RACE {
+            return Ok(());
+        }
+        let discoverer = Discoverer::new().await?;
+        let (mut camera, camera_addr) = peer().await?;
+        let result = ConnectResult {
+            addr: camera_addr,
+            client_id: 1,
+            camera_id: 2,
+            sid: 3,
+        };
+
+        // Another method is still connecting
+        let held = discoverer.semaphore.clone().acquire_owned().await.unwrap();
+        assert!(discoverer.claim_confirmed(&result).await.is_err());
+        assert_matches!(
+            recv(&mut camera).await?,
+            BcUdp::Discovery(UdpDiscovery {
+                payload: UdpXml::C2dDisc(C2dDisc { cid: 1, did: 2 }),
+                ..
+            })
+        );
+
+        // Another method has already connected
+        drop(held);
+        discoverer.semaphore.close();
+        assert!(discoverer.claim_confirmed(&result).await.is_err());
+        assert_matches!(
+            recv(&mut camera).await?,
+            BcUdp::Discovery(UdpDiscovery {
+                payload: UdpXml::C2dDisc(C2dDisc { cid: 1, did: 2 }),
+                ..
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_register_confirm_does_not_block() -> Result<()> {
+        if !*ASYNC_REGISTER_CONFIRM {
+            return Ok(());
+        }
+        let discoverer = Discoverer::new().await?;
+        let (mut register, register_addr) = peer().await?;
+        let msg = UdpDiscovery {
+            tid: 0,
+            payload: UdpXml::C2rCfm(C2rCfm {
+                sid: 3,
+                cid: 1,
+                did: 2,
+                rsp: 0,
+                conn: "map".to_string(),
+            }),
+        };
+
+        timeout(
+            Duration::from_millis(250),
+            discoverer.confirm_to_register(msg, register_addr),
+        )
+        .await??;
+        // The resends outlive the Discoverer
+        drop(discoverer);
+        for _ in 0..5 {
+            assert_matches!(
+                recv(&mut register).await?,
+                BcUdp::Discovery(UdpDiscovery {
+                    payload: UdpXml::C2rCfm(_),
+                    ..
+                })
+            );
+        }
+        Ok(())
+    }
 }
 
 /*
