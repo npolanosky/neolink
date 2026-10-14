@@ -1180,7 +1180,9 @@ impl Discoverer {
             }),
         };
 
-        self.confirm_to_register(msg, register_result.reg).await?;
+        // The relay path works in the field with the blocking confirm, so it keeps it.
+        // The async confirm only targets the direct paths' post-confirm silence.
+        self.send_and_forget(msg, register_result.reg).await?;
 
         self.keep_alive_device(tid, &result).await;
         // self.keep_alive_relay(tid, &result).await;
