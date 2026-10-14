@@ -33,7 +33,7 @@ Global options:
 | Option | Default | Notes |
 |---|---|---|
 | `rtsp_port` | 8654 | The add-on uses the host network and Frigate's go2rtc already owns 8554. |
-| `log_level` | `info` | `RUST_LOG` syntax. For discovery troubleshooting: `info,neolink_core::bc_protocol::connection::discovery=debug` |
+| `log_level` | `info` | `RUST_LOG` syntax. For discovery troubleshooting: `info,neolink_core::bc_protocol::connection=debug` |
 | `relay_delay_ms` | 5000 | UID discovery runs all methods at once and the first to connect wins. This holds the Reolink relay back so a direct path (remote/map) can win. |
 | `use_splash` | `false` | Serve a "please stand by" test pattern while a camera is offline. Off means the stream is simply unavailable, so Frigate does not record or detect on the pattern. |
 | `tunnel_handshake` | `true` | Accept a camera's direct handshake when it arrives through a VPN tunnel instead of from its public address. Turn off to restore upstream behaviour if a tunnelled camera fails to connect. |
