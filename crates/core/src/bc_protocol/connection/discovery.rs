@@ -87,6 +87,13 @@ lazy_static! {
     static ref TCP_WAIT: Duration = Duration::from_secs(4);
     /// How long to wait before resending
     static ref RESEND_WAIT: Duration = Duration::from_millis(500);
+    /// Accept device initiated handshakes from any source address (see
+    /// `device_initiated_dev`). On by default; `NEOLINK_TUNNEL_HANDSHAKE=0`
+    /// restores the strict dmap-only check.
+    static ref ACCEPT_ANY_SOURCE: bool = !matches!(
+        std::env::var("NEOLINK_TUNNEL_HANDSHAKE").as_deref(),
+        Ok("0") | Ok("false") | Ok("off")
+    );
 
 }
 
@@ -140,6 +147,14 @@ impl Discoverer {
                         match reader.next().await {
                             Some(Ok((BcUdp::Discovery(bcudp), addr))) => {
                                 log::trace!("Got discovery {:?} for {}", bcudp, addr);
+                                if !is_heartbeat(&bcudp.payload) {
+                                    log::debug!(
+                                        "Discovery rx {} (tid {}) from {}",
+                                        payload_kind(&bcudp.payload),
+                                        bcudp.tid,
+                                        addr
+                                    );
+                                }
                                 let tid = bcudp.tid;
                                 let mut needs_removal = false;
                                 if let (Some(sender), true) =
@@ -261,6 +276,16 @@ impl Discoverer {
     }
 
     async fn send(&self, disc: BcUdp, addr: SocketAddr) -> Result<()> {
+        if let BcUdp::Discovery(UdpDiscovery { tid, payload }) = &disc {
+            if !is_heartbeat(payload) {
+                log::debug!(
+                    "Discovery tx {} (tid {}) to {}",
+                    payload_kind(payload),
+                    tid,
+                    addr
+                );
+            }
+        }
         self.writer
             .send(Ok((disc, addr)))
             .await
@@ -618,7 +643,8 @@ impl Discoverer {
                         },
                     ) if cid == register_result.client_id
                         && &sid == register_sid
-                        && &conn == "local" =>
+                        && &conn == "local"
+                        && (*ACCEPT_ANY_SOURCE || register_dmap.as_ref() == Some(&addr)) =>
                     {
                         // The camera does not always reach us from the dmap address the
                         // register server reported. Behind a VPN (e.g. a travel router
@@ -650,13 +676,10 @@ impl Discoverer {
             }),
         };
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Other("Discovery already complete"))?;
-        // Send and await confirm
+        // Send and await confirm. The permit is only taken once the camera has
+        // confirmed: a device initiated handshake can arrive over a path that
+        // never completes (e.g. through a VPN tunnel), and holding the permit
+        // while waiting would block the relay until this times out.
         self.retry_send(msg, addr, |bc, _| {
             trace!("msg: {:?}", &bc);
             match bc {
@@ -681,6 +704,13 @@ impl Discoverer {
             }
         })
         .await?;
+
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::Other("Discovery already complete"))?;
 
         let result = ConnectResult {
             addr,
@@ -737,7 +767,8 @@ impl Discoverer {
                         },
                     ) if cid == register_result.client_id
                         && &sid == register_sid
-                        && &conn == "map" =>
+                        && &conn == "map"
+                        && (*ACCEPT_ANY_SOURCE || register_dmap.as_ref() == Some(&addr)) =>
                     {
                         // The camera does not always reach us from the dmap address the
                         // register server reported. Behind a VPN (e.g. a travel router
@@ -769,13 +800,10 @@ impl Discoverer {
             }),
         };
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Other("Discovery already complete"))?;
-        // Send and await confirm
+        // Send and await confirm. The permit is only taken once the camera has
+        // confirmed: a device initiated handshake can arrive over a path that
+        // never completes (e.g. through a VPN tunnel), and holding the permit
+        // while waiting would block the relay until this times out.
         self.retry_send(msg, addr, |bc, _| {
             trace!("msg: {:?}", &bc);
             match bc {
@@ -800,6 +828,13 @@ impl Discoverer {
             }
         })
         .await?;
+
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::Other("Discovery already complete"))?;
 
         let result = ConnectResult {
             addr,
@@ -1244,6 +1279,19 @@ impl Discovery {
             camera_id: connect_result.camera_id,
         })
     }
+}
+
+fn is_heartbeat(payload: &UdpXml) -> bool {
+    matches!(
+        payload,
+        UdpXml::C2dHb(_) | UdpXml::C2rHb(_) | UdpXml::D2cHb(_)
+    )
+}
+
+/// Message type for discovery logs, e.g. `D2C_T` (device to client, transfer)
+fn payload_kind(payload: &UdpXml) -> String {
+    let debug = format!("{:?}", payload);
+    debug.split('(').next().unwrap_or_default().to_string()
 }
 
 /// The IP we register with Reolink for the camera to connect back to.
