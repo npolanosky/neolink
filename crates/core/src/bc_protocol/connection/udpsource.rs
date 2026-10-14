@@ -526,6 +526,33 @@ impl UdpPayloadInner {
                 // Incomming from socket
                 // Outgoing to application
                 let (item, addr) = v.ok_or(Error::BcUdpDropReciver(BcUdpDropReciverKind::NoneRecieved))?;
+                // A disconnect only ends the session when it is about this session. The
+                // relay and register that may announce the end of a relay session share
+                // a host, so for those the IP is enough. Anything else is e.g. the relay
+                // dropping a relay attempt we abandoned for this direct session.
+                match &item {
+                    BcUdp::Discovery(UdpDiscovery {
+                        payload: payload @ UdpXml::D2cDisc(_),
+                        ..
+                    }) if addr == camera_addr => {
+                        log::info!("UDP session with {} ended by {:?} from {}", camera_addr, payload, addr);
+                        return Err(Error::CameraTerminate);
+                    }
+                    BcUdp::Discovery(UdpDiscovery {
+                        payload: payload @ UdpXml::R2cDisc(_),
+                        ..
+                    }) if addr.ip() == camera_addr.ip() => {
+                        log::info!("UDP session with {} ended by {:?} from {}", camera_addr, payload, addr);
+                        return Err(Error::RelayTerminate);
+                    }
+                    BcUdp::Discovery(UdpDiscovery {
+                        payload: payload @ (UdpXml::D2cDisc(_) | UdpXml::R2cDisc(_)),
+                        ..
+                    }) => {
+                        log::info!("UDP session with {}: ignoring {:?} from {}", camera_addr, payload, addr);
+                    }
+                    _ => {}
+                }
                 if addr == camera_addr {
                     match item {
                         BcUdp::Discovery(UdpDiscovery{

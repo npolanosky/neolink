@@ -71,7 +71,18 @@ fn udp_disc(buf: &[u8]) -> IResult<&[u8], UdpDiscovery> {
     let (buf, enc_data_slice) = take(payload_size)(buf)?;
 
     let actual_checksum = calc_crc(enc_data_slice);
-    assert_eq!(checksum, actual_checksum);
+    if checksum != actual_checksum {
+        log::debug!(
+            "DISC: Checksum mismatch: header {:08X}, payload {:08X}",
+            checksum,
+            actual_checksum
+        );
+        return Err(Err::Error(make_error(
+            buf,
+            "DISC: Checksum mismatch",
+            ErrorKind::Verify,
+        )));
+    }
 
     let decrypted_payload = decrypt(tid, enc_data_slice);
     let payload = UdpXml::try_parse(decrypted_payload.as_slice()).map_err(|e| {
@@ -175,6 +186,19 @@ mod tests {
                 }),
             }))
         );
+    }
+
+    #[test]
+    // A corrupt payload is an error rather than a panic
+    fn test_nego_bad_checksum() {
+        init();
+
+        let mut sample = include_bytes!("samples/udp_negotiate_disc.bin").to_vec();
+        // The encrypted payload follows the 20 byte header
+        sample[20] ^= 0xff;
+
+        let e = BcUdp::deserialize(&mut BytesMut::from(&sample[..]));
+        assert_matches!(e, Err(Error::NomError(_)));
     }
 
     #[test]

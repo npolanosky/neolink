@@ -139,6 +139,7 @@ impl Discoverer {
         let thread_handlers = handlers.clone();
         let thread_cancel = cancel.clone();
         set.spawn(async move {
+            let mut bad_packets: u64 = 0;
             tokio::select! {
                 _ = thread_cancel.cancelled() => Result::Ok(()),
                 v = async {
@@ -147,7 +148,17 @@ impl Discoverer {
                         match reader.next().await {
                             Some(Ok((BcUdp::Discovery(bcudp), addr))) => {
                                 log::trace!("Got discovery {:?} for {}", bcudp, addr);
-                                if !is_heartbeat(&bcudp.payload) {
+                                if let UdpXml::R2cDisc(_) | UdpXml::D2cDisc(_) = &bcudp.payload {
+                                    // Not an error here: the relay or a camera may drop an
+                                    // attempt we have given up on. Waiters that care (the
+                                    // relay) match on it themselves.
+                                    log::info!(
+                                        "Discovery rx {:?} (tid {}) from {}",
+                                        bcudp.payload,
+                                        bcudp.tid,
+                                        addr
+                                    );
+                                } else if !is_heartbeat(&bcudp.payload) {
                                     log::debug!(
                                         "Discovery rx {} (tid {}) from {}",
                                         payload_kind(&bcudp.payload),
@@ -177,13 +188,21 @@ impl Discoverer {
                                 log::debug!("Got non Discovery during discovery: {:?}", bcudp);
                             }
                             Some(Err(e)) => {
-                                log::error!("Error on discovery socket: {:?}", e);
-                                let mut locked_sub = thread_subscriber.write().await;
-                                for (_, sub) in locked_sub.iter() {
-                                    let _ = sub.send(Err(e.clone())).await;
+                                // Anyone can send to this port, so one bad datagram must
+                                // not end discovery. The codec has already dropped it.
+                                bad_packets += 1;
+                                if bad_packets <= 5 || bad_packets % 100 == 0 {
+                                    let msg = e.to_string();
+                                    log::warn!(
+                                        "Ignoring error on discovery socket ({} so far): {}",
+                                        bad_packets,
+                                        msg.chars().take(200).collect::<String>()
+                                    );
                                 }
-                                locked_sub.clear();
-                                break Result::Ok(());
+                                if let Error::Io(_) = e {
+                                    // Don't spin if the socket itself keeps failing
+                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                }
                             }
                             None => break Result::Ok(()),
                         }
@@ -1020,11 +1039,16 @@ impl Discoverer {
                     && sid == register_result.sid
                     && &conn == "relay" =>
                 {
-                    Some((addr, did))
+                    Some(Ok((addr, did)))
                 }
+                // The codec used to turn this into a socket error that ended the wait
+                UdpDiscovery {
+                    tid: _,
+                    payload: UdpXml::R2cDisc(R2cDisc { sid }),
+                } if sid == register_result.sid => Some(Err(Error::RelayTerminate)),
                 _ => None,
             })
-            .await?;
+            .await??;
 
         let result = ConnectResult {
             addr: final_addr,
