@@ -1,31 +1,64 @@
 # Neolink
 
-![Docker GHCR](https://github.com/MutuallyAssuredDeployment/neolink/actions/workflows/docker-ghcr.yml/badge.svg)
-[![dependency status](https://deps.rs/repo/github/MutuallyAssuredDeployment/neolink/status.svg)](https://deps.rs/repo/github/MutuallyAssuredDeployment/neolink)
+![Docker GHCR](https://github.com/npolanosky/neolink/actions/workflows/docker-ghcr.yml/badge.svg)
+[![dependency status](https://deps.rs/repo/github/npolanosky/neolink/status.svg)](https://deps.rs/repo/github/npolanosky/neolink)
 
-Neolink is a small program that acts as a proxy between Reolink IP cameras and
-normal RTSP clients.
-Certain cameras, such as the Reolink B800, do not implement ONVIF or RTSP, but
-instead use a proprietary "Baichuan" protocol only compatible with their apps
-and NVRs (any camera that uses "port 9000" will likely be using this protocol).
-Neolink allows you to use NVR software such as Blue Iris, Frigate, or Shinobi to
-receive video from these cameras instead.
-The Reolink NVR is not required, and the cameras are unmodified.
-Your NVR software connects to Neolink, which forwards the video stream from the
-camera.
+Neolink is a small program that proxies Reolink cameras that only speak the
+proprietary "Baichuan" protocol (port 9000) to standard RTSP, so NVR software
+such as Frigate, Blue Iris, or Shinobi can use them. The Reolink NVR is not
+required and the cameras are unmodified. Neolink is not affiliated with Reolink;
+everything it does has been reverse engineered.
 
-The Neolink project is not affiliated with Reolink in any way; everything it
-does has been reverse engineered.
+## What this fork adds
 
-## This Fork
+This fork was made to run portable Reolink E1 pan/tilt cameras behind a UniFi
+Travel Router (with UniFi Teleport VPN back home) and record them in Frigate on
+Home Assistant OS. It adds three things upstream does not have:
 
-This is a maintained fork of
+**1. Direct UID connections through VPN tunnels.** Upstream only accepted the
+camera's connection if it came from the camera's public address as reported by
+Reolink. Behind a travel router tunnelling into your home LAN, the handshake
+arrives from the tunnel's NAT address, so it was discarded and only Reolink's
+bandwidth-limited relay worked (about 0.6 Mbps per stream measured, roughly 1.5
+fps of a 2 Mbps stream). This fork accepts the handshake when the session IDs
+match, so the direct path works whenever the tunnel routes camera traffic to
+neolink's LAN. The relay remains as a fallback. Also new: neolink registers the
+default-route source IP instead of the first interface (a Docker bridge on
+HAOS), overridable with `NEOLINK_LOCAL_IP`, and a per-camera `relay_delay_ms`
+gives direct paths a head start before the relay joins the race. See
+[Discovery](docs/configuration.md#discovery) and
+[Cameras behind a VPN or travel router](docs/configuration.md#cameras-behind-a-vpn-or-travel-router).
+The code is in `crates/core/src/bc_protocol/connection/discovery.rs` and
+`crates/core/src/bc_protocol.rs`.
+
+**2. ONVIF PTZ bridge.** Frigate and other NVRs only drive PTZ over ONVIF, and
+Baichuan cameras like the E1 have none. Set `onvif_port` on a camera and neolink
+serves a minimal ONVIF device for it: pan/tilt (ContinuousMove/Stop, one axis at
+a time), presets (GetPresets/GotoPreset, cached so they survive the camera being
+offline when the NVR starts), GetStatus and GetStreamUri, with WS-Security auth
+against `[[users]]`. There is no autotracking because the protocol reports no
+position. Tested against onvif-zeep-async 4.0.4, the client Frigate 0.18 uses.
+See [ONVIF PTZ](docs/configuration.md#onvif-ptz) and `src/onvif/`.
+
+**3. Home Assistant OS add-on.** A local add-on in
+[`homeassistant/neolink/`](homeassistant/neolink/) wraps this fork's image and
+generates `neolink.toml` from an options form. It uses host networking, serves
+RTSP on 8654 (Frigate's go2rtc owns 8554), and leaves the splash screen off by
+default so offline cameras are not recorded as a test pattern. A Frigate config
+example is in [`homeassistant/neolink/DOCS.md`](homeassistant/neolink/DOCS.md).
+See [Home Assistant add-on](#home-assistant-add-on) below.
+
+## Lineage and inherited changes
+
+This is a fork of
+[MutuallyAssuredDeployment/neolink](https://github.com/MutuallyAssuredDeployment/neolink),
+which is a fork of
 [QuantumEntangledAndy/neolink](https://github.com/QuantumEntangledAndy/neolink),
 which itself was a fork of
 [thirtythreeforty/neolink](https://github.com/thirtythreeforty/neolink).
 
-This fork incorporates community PRs that were submitted to upstream but never
-merged, plus additional improvements:
+The parent fork incorporates community PRs that were submitted to upstream but
+never merged, plus additional improvements:
 
 **Ported community contributions:**
 
@@ -38,7 +71,7 @@ merged, plus additional improvements:
 - Channel backpressure fix preventing keepalive timeouts — [@joshkautz](https://github.com/joshkautz) ([#399](https://github.com/QuantumEntangledAndy/neolink/pull/399))
 - Pipeline sharing to prevent per-client resource exhaustion — [@joshkautz](https://github.com/joshkautz) ([#400](https://github.com/QuantumEntangledAndy/neolink/pull/400))
 
-**Additional changes:**
+**Additional changes from the parent fork:**
 
 - Low-latency RTSP mode with frame draining, live-mode AppSrc, and reduced buffers
 - Docker images published to GHCR instead of Docker Hub
@@ -62,12 +95,16 @@ provided.
 
 ### Docker (recommended)
 
-Images are published to GHCR on every push to `master` and on tags:
+Images are built on version tags (the first is `v0.7.0-ha.1`) and on every push
+to `master`:
 
 ```bash
-docker pull ghcr.io/mutuallyassureddeployment/neolink:dev     # latest master
-docker pull ghcr.io/mutuallyassureddeployment/neolink:latest   # latest tagged release
+docker pull ghcr.io/npolanosky/neolink:latest        # latest tagged release
+docker pull ghcr.io/npolanosky/neolink:v0.7.0-ha.1   # a specific release
+docker pull ghcr.io/npolanosky/neolink:dev           # latest master
 ```
+
+Master pushes also get a short-sha tag.
 
 Run with:
 
@@ -75,7 +112,7 @@ Run with:
 docker run \
   --network host \
   --volume=$PWD/neolink.toml:/etc/neolink.toml \
-  ghcr.io/mutuallyassureddeployment/neolink
+  ghcr.io/npolanosky/neolink
 ```
 
 > `--network host` is only needed for local broadcast discovery. If you connect
@@ -88,6 +125,18 @@ docker run \
 |---|---|---|
 | `NEO_LINK_MODE` | `rtsp` | Mode: `rtsp`, `mqtt`, or `mqtt-rtsp` |
 | `NEO_LINK_PORT` | `8554` | RTSP listen port |
+
+### Home Assistant add-on
+
+For Home Assistant OS, use the local add-on in `homeassistant/neolink/`:
+
+1. Copy the `homeassistant/neolink` folder to the `/addons` share on HAOS
+   (for example over Samba), so it ends up at `/addons/neolink`.
+2. Settings → Add-ons → Add-on Store → ⋮ → Check for updates.
+3. Open **Local add-ons → Neolink**, fill in the cameras, and start it.
+
+Options, stream URLs, and a Frigate example are in
+[`homeassistant/neolink/DOCS.md`](homeassistant/neolink/DOCS.md).
 
 ### Building from source
 
@@ -117,7 +166,7 @@ Detailed docs are in the [`docs/`](docs/) directory:
 ## Configuration
 
 Create a `neolink.toml` file. See
-[sample_config.toml](https://github.com/MutuallyAssuredDeployment/neolink/blob/master/sample_config.toml)
+[sample_config.toml](https://github.com/npolanosky/neolink/blob/master/sample_config.toml)
 for all options.
 
 Minimal example:
@@ -216,7 +265,7 @@ All messages are prefixed with `neolink/` or `neolink/{CAMERA_NAME}/`.
 **Query** (`/query/...`): `battery`, `pir`, `ptz/preset`, `preview`
 
 See the
-[sample config](https://github.com/MutuallyAssuredDeployment/neolink/blob/master/sample_config.toml)
+[sample config](https://github.com/npolanosky/neolink/blob/master/sample_config.toml)
 for per-camera MQTT options (`enable_motion`, `enable_preview`,
 `enable_battery`, etc.).
 
