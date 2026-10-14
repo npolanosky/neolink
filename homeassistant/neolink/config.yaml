@@ -3,7 +3,7 @@
 # on the box. The Dockerfile wraps the prebuilt GHCR image from this fork (built by
 # .github/workflows/docker-ghcr.yml), so no Rust compile happens on the HA host.
 name: Neolink
-version: "0.2.0"
+version: "0.3.0"
 slug: neolink
 description: Reolink Baichuan (port 9000) to RTSP proxy, for Frigate and other NVRs
 url: https://github.com/npolanosky/neolink
@@ -23,6 +23,7 @@ options:
   log_level: info
   relay_delay_ms: 5000
   use_splash: false
+  tunnel_handshake: true
   cameras:
     - name: camera1
       username: admin
@@ -38,6 +39,9 @@ schema:
   # Neolink's "please stand by" test pattern while a camera is offline. Off: the stream is
   # simply unavailable, so Frigate does not record or run detection on the pattern.
   use_splash: bool
+  # Accept a camera's direct handshake arriving through a VPN tunnel (e.g. UniFi Teleport)
+  # rather than from its public address. Off restores upstream's strict check.
+  tunnel_handshake: bool
   # IP registered with Reolink for cameras to connect back to (default: default-route IP)
   local_ip: str?
   cameras:

@@ -96,7 +96,9 @@ travel router running UniFi Teleport or WireGuard): the camera connects to the
 local address neolink registers with Reolink, and the handshake arrives from the
 tunnel's address. Neolink registers the source IP of its default route; set the
 `NEOLINK_LOCAL_IP` environment variable if that is not the address the camera
-can reach.
+can reach. `NEOLINK_TUNNEL_HANDSHAKE=0` restores the strict check that only
+accepts the handshake from the camera's public address. Discovery traffic is
+logged at debug level (`neolink_core::bc_protocol::connection::discovery=debug`).
 
 ## Pause & Idle Disconnect
 
@@ -155,7 +157,7 @@ cameras:
     onvif:
       host: 192.168.1.20
       port: 8001
-      user: frigate       # only when [[users]] are set
+      user: frigate       # Frigate requires these; any value works without [[users]]
       password: secret
 ```
 

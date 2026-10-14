@@ -33,6 +33,7 @@ Global options:
 | `log_level` | `info` | `RUST_LOG` syntax. For discovery troubleshooting: `info,neolink_core::bc_protocol::connection::discovery=debug` |
 | `relay_delay_ms` | 5000 | UID discovery runs all methods at once and the first to connect wins. This holds the Reolink relay back so a direct path (remote/map) can win. |
 | `use_splash` | `false` | Serve a "please stand by" test pattern while a camera is offline. Off means the stream is simply unavailable, so Frigate does not record or detect on the pattern. |
+| `tunnel_handshake` | `true` | Accept a camera's direct handshake when it arrives through a VPN tunnel instead of from its public address. Turn off to restore upstream behaviour if a tunnelled camera fails to connect. |
 | `local_ip` | (auto) | IP neolink registers with Reolink for cameras to connect back to. Defaults to the host's default-route IP. |
 
 `users` (optional) password-protects the RTSP server and the ONVIF bridge. If empty,
@@ -69,8 +70,9 @@ With `uid` set, neolink finds the camera wherever it is. In the log:
 ## Offline cameras
 
 When a camera is unreachable neolink keeps retrying in the background. With `use_splash`
-off, clients get no stream until it is back: Frigate shows the camera as offline and
-retries every `retry_interval` seconds, without recording or detecting on anything.
+off, the stream path returns 404 until the camera is back: Frigate shows the camera as
+offline and retries every `retry_interval` seconds, without recording or detecting on
+anything.
 
 ## Frigate
 
@@ -97,12 +99,17 @@ cameras:
     onvif:              # only with onvif_port set for the camera
       host: <HA-IP>
       port: 8001
+      user: neolink     # required by Frigate's client; any value without add-on users
+      password: neolink
 ```
 
 Frigate's detect downscales the main stream itself, so a single stream per camera is
 enough and keeps bandwidth to the camera down.
 
 ### PTZ through the ONVIF bridge
+
+Frigate's ONVIF client fails with `bad argument type: NoneType(None)` when `user` and
+`password` are missing. Set both; with no `users` in this add-on any values are accepted.
 
 Frigate's live view gets pan/tilt arrows and the camera's presets. The camera moves one
 axis at a time (no diagonals), reports no position, so autotracking is not available.

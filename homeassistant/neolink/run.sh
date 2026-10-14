@@ -8,6 +8,9 @@ CUSTOM=/config/neolink.toml
 GENERATED=/data/neolink.toml
 
 export RUST_LOG="$(jq -r '.log_level // "info"' "$OPTIONS")"
+if [ "$(jq -r '.tunnel_handshake == false' "$OPTIONS")" = "true" ]; then
+    export NEOLINK_TUNNEL_HANDSHAKE=0
+fi
 local_ip="$(jq -r '.local_ip // ""' "$OPTIONS")"
 if [ -n "$local_ip" ]; then
     export NEOLINK_LOCAL_IP="$local_ip"
