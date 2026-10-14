@@ -323,6 +323,12 @@ impl UdpPayloadInner {
         let mut set = JoinSet::new();
         let camera_addr = inner.addr;
         let cancel = CancellationToken::new();
+        log::debug!(
+            "UDP session with {} (client id {}, camera id {})",
+            camera_addr,
+            client_id,
+            camera_id
+        );
         // Data in this needs to be passed into the socket regularly
         // especially the ACK packets on UDP. The thread must not lock
         // and MUST send ACK packets or else be dropped by the camera.
@@ -402,6 +408,10 @@ impl UdpPayloadInner {
                 } => v,
             };
             send_cancel.cancel();
+            if let Err(e) = &result {
+                // Downstream this only shows up as NoneRecieved, so log the cause here
+                log::info!("UDP session with {} ended: {:?}", thread_camera_addr, e);
+            }
             result
         });
 

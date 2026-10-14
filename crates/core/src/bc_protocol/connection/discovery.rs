@@ -680,20 +680,21 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        let local_did = self
-            .retry_send(msg, addr, |bc, from| {
+        self.retry_send(msg, addr, |bc, from| {
                 trace!("msg: {:?}", &bc);
                 match bc {
                     // Match on sid/cid like client_initiated_dev does. Through a VPN
                     // tunnel the camera's confirm arrived (same tid) but was rejected by
                     // the stricter did/conn match, so the handshake retried until the
-                    // relay won. The confirmed did is the one to use from here on.
+                    // relay won. The session keeps the did the camera announced in its
+                    // D2C_T: upstream required both to match, so that is the known good
+                    // value, and the confirm's did is only logged when it differs.
                     UdpDiscovery {
                         tid: _,
                         payload: UdpXml::D2cCfm(cfm),
                     } if cfm.sid == register_result.sid && cfm.cid == register_result.client_id => {
                         if cfm.did != local_did || cfm.conn != "local" {
-                            log::debug!(
+                            log::info!(
                                 "D2C_CFM from {} differs from its D2C_T (did {}, conn local): {:?}",
                                 from,
                                 local_did,
@@ -708,7 +709,7 @@ impl Discoverer {
                             );
                             Some(Err(Error::Other("Camera refused the connection")))
                         } else {
-                            Some(Ok(cfm.did))
+                            Some(Ok(()))
                         }
                     }
                     UdpDiscovery {
@@ -828,20 +829,21 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        let local_did = self
-            .retry_send(msg, addr, |bc, from| {
+        self.retry_send(msg, addr, |bc, from| {
                 trace!("msg: {:?}", &bc);
                 match bc {
                     // Match on sid/cid like client_initiated_dev does. Through a VPN
                     // tunnel the camera's confirm arrived (same tid) but was rejected by
                     // the stricter did/conn match, so the handshake retried until the
-                    // relay won. The confirmed did is the one to use from here on.
+                    // relay won. The session keeps the did the camera announced in its
+                    // D2C_T: upstream required both to match, so that is the known good
+                    // value, and the confirm's did is only logged when it differs.
                     UdpDiscovery {
                         tid: _,
                         payload: UdpXml::D2cCfm(cfm),
                     } if cfm.sid == register_result.sid && cfm.cid == register_result.client_id => {
                         if cfm.did != local_did || cfm.conn != "map" {
-                            log::debug!(
+                            log::info!(
                                 "D2C_CFM from {} differs from its D2C_T (did {}, conn map): {:?}",
                                 from,
                                 local_did,
@@ -856,7 +858,7 @@ impl Discoverer {
                             );
                             Some(Err(Error::Other("Camera refused the connection")))
                         } else {
-                            Some(Ok(cfm.did))
+                            Some(Ok(()))
                         }
                     }
                     UdpDiscovery {
