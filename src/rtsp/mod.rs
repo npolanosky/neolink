@@ -362,9 +362,14 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                         let mounts = rtsp
                             .mount_points()
                             .ok_or(anyhow!("RTSP server lacks mount point"))?;
-                        for path in paths.iter() {
-                            log::debug!("Path: {}", path);
-                            mounts.add_factory(path, dummy_factory.clone());
+                        // Without a splash the dummy has nothing to serve and GStreamer logs
+                        // a CRITICAL on every client attempt, so leave the path unmounted (404)
+                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        if use_splash {
+                            for path in paths.iter() {
+                                log::debug!("Path: {}", path);
+                                mounts.add_factory(path, dummy_factory.clone());
+                            }
                         }
                         log::debug!("{}: Preparing at {}", name, paths.join(", "));
 
@@ -396,9 +401,14 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                             .mount_points()
                             .ok_or(anyhow!("RTSP server lacks mount point"))?;
                         // Create the dummy factory
-                        for path in paths.iter() {
-                            log::debug!("Path: {}", path);
-                            mounts.add_factory(path, dummy_factory.clone());
+                        // Without a splash the dummy has nothing to serve and GStreamer logs
+                        // a CRITICAL on every client attempt, so leave the path unmounted (404)
+                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        if use_splash {
+                            for path in paths.iter() {
+                                log::debug!("Path: {}", path);
+                                mounts.add_factory(path, dummy_factory.clone());
+                            }
                         }
                         log::debug!("{}: Preparing at {}", name, paths.join(", "));
 
@@ -430,9 +440,14 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                         let mounts = rtsp
                             .mount_points()
                             .ok_or(anyhow!("RTSP server lacks mount point"))?;
-                        for path in paths.iter() {
-                            log::debug!("Path: {}", path);
-                            mounts.add_factory(path, dummy_factory.clone());
+                        // Without a splash the dummy has nothing to serve and GStreamer logs
+                        // a CRITICAL on every client attempt, so leave the path unmounted (404)
+                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        if use_splash {
+                            for path in paths.iter() {
+                                log::debug!("Path: {}", path);
+                                mounts.add_factory(path, dummy_factory.clone());
+                            }
                         }
                         log::debug!("{}: Preparing at {}", name, paths.join(", "));
 
