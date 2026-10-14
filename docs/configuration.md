@@ -114,7 +114,10 @@ travel router running UniFi Teleport or WireGuard): the camera connects to the
 local address neolink registers with Reolink, and the handshake arrives from the
 tunnel's address. Neolink registers the source IP of its default route; set the
 `NEOLINK_LOCAL_IP` environment variable if that is not the address the camera
-can reach. `NEOLINK_TUNNEL_HANDSHAKE=0` restores the strict check that only
+can reach. If a direct (remote/map) session completes its handshake but fails to log in,
+neolink uses the relay for that camera for the next 10 minutes
+(`NEOLINK_DIRECT_RETRY_SECS`) and then tries the direct path again.
+`NEOLINK_TUNNEL_HANDSHAKE=0` restores the strict check that only
 accepts the handshake from the camera's public address. Discovery traffic is
 logged at debug level (`neolink_core::bc_protocol::connection::discovery=debug`).
 

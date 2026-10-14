@@ -68,6 +68,9 @@ With `uid` set, neolink finds the camera wherever it is. In the log:
   VPN tunnel. Full bandwidth.
 - `Device initiated ... connection from <ip>`: the camera reached neolink through a
   tunnel (e.g. UniFi Teleport) rather than its public address. Direct path.
+- `Direct connection did not answer, using the Reolink relay`: a direct path completed
+  its handshake but no data came back (e.g. the tunnel drops the camera's traffic). That
+  camera uses the relay for 10 minutes, then neolink tries the direct path again.
 - `Relay success`: video flows through Reolink's servers. Works almost anywhere but
   bandwidth is limited (roughly 0.5–1 Mbps per stream) and Reolink can see the traffic.
 

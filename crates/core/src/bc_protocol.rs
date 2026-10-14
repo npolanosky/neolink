@@ -81,6 +81,17 @@ pub struct BcCamera {
     abilities: RwLock<HashMap<String, ReadKind>>,
     #[allow(dead_code)]
     cancel: CancellationToken,
+    /// UID when connected over a direct (remote/map) UDP path, see `direct_path_failed`
+    direct_uid: Option<String>,
+}
+
+fn direct_backed_off(uid: &str) -> bool {
+    DIRECT_BACKOFF
+        .lock()
+        .ok()
+        .and_then(|backoff| backoff.get(uid).copied())
+        .map(|until| std::time::Instant::now() < until)
+        .unwrap_or(false)
 }
 
 /// Options used to construct a camera
@@ -142,7 +153,24 @@ pub enum ConnectionProtocol {
 
 enum CameraLocation {
     Tcp(SocketAddr),
-    Udp(DiscoveryResult),
+    /// The bool is true for direct paths found through Reolink's servers
+    /// (remote/map), which can complete the handshake yet carry no data
+    Udp(DiscoveryResult, bool),
+}
+
+lazy_static::lazy_static! {
+    /// UIDs whose direct (remote/map) session failed to log in, with the time until
+    /// which discovery skips those methods and goes straight to the relay
+    static ref DIRECT_BACKOFF: std::sync::Mutex<HashMap<String, std::time::Instant>> =
+        Default::default();
+    /// How long to stay on the relay after a failed direct session.
+    /// `NEOLINK_DIRECT_RETRY_SECS`, default 600
+    static ref DIRECT_RETRY: std::time::Duration = std::time::Duration::from_secs(
+        std::env::var("NEOLINK_DIRECT_RETRY_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600)
+    );
 }
 
 impl BcCamera {
@@ -198,15 +226,28 @@ impl BcCamera {
                     }
                 }
             }
-            let (allow_local, allow_remote, allow_map, allow_relay) = match options.discovery {
-                DiscoveryMethods::None => (false, false, false, false),
-                DiscoveryMethods::Local => (true, false, false, false),
-                DiscoveryMethods::Remote => (true, true, false, false),
-                DiscoveryMethods::Map => (true, true, true, false),
-                DiscoveryMethods::Relay => (true, true, true, true),
-                DiscoveryMethods::Cellular => (false, false, true, true),
-                DiscoveryMethods::Debug => (false, false, true, false),
-            };
+            let (allow_local, mut allow_remote, mut allow_map, allow_relay) =
+                match options.discovery {
+                    DiscoveryMethods::None => (false, false, false, false),
+                    DiscoveryMethods::Local => (true, false, false, false),
+                    DiscoveryMethods::Remote => (true, true, false, false),
+                    DiscoveryMethods::Map => (true, true, true, false),
+                    DiscoveryMethods::Relay => (true, true, true, true),
+                    DiscoveryMethods::Cellular => (false, false, true, true),
+                    DiscoveryMethods::Debug => (false, false, true, false),
+                };
+            // A direct session that recently failed to log in would win the race again
+            // and fail again, so use the relay until the backoff expires
+            let mut relay_delay_ms = options.relay_delay_ms;
+            if allow_relay && direct_backed_off(uid) {
+                info!(
+                    "{}: Direct connection failed recently, using the relay",
+                    options.name
+                );
+                allow_remote = false;
+                allow_map = false;
+                relay_delay_ms = 0;
+            }
 
             let res = tokio::select! {
                 Ok(v) = async {
@@ -221,7 +262,7 @@ impl BcCamera {
                                 uid_local,
                                 disc.get_addr()
                             );
-                            Ok(CameraLocation::Udp(disc))
+                            Ok(CameraLocation::Udp(disc, false))
                         },
                         Err(e) => Err(e)
                     }
@@ -268,7 +309,7 @@ impl BcCamera {
                                         uid_remote,
                                         disc.get_addr()
                                     );
-                                    Ok(CameraLocation::Udp(disc))
+                                    Ok(CameraLocation::Udp(disc, true))
                                 },
                                 Err(e) => Err(e)
                             }
@@ -286,14 +327,14 @@ impl BcCamera {
                                         uid_map,
                                         disc.get_addr()
                                     );
-                                    Ok(CameraLocation::Udp(disc))
+                                    Ok(CameraLocation::Udp(disc, true))
                                 },
                                 Err(e) => Err(e),
                             }
                         }, if allow_map => Ok(v),
                         Ok(v) = async {
                             let uid_relay = uid.clone();
-                            tokio::time::sleep(tokio::time::Duration::from_millis(options.relay_delay_ms)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_millis(relay_delay_ms)).await;
                             info!("{}: Trying relay discovery", options.name);
                             let result = discovery.relay(&reg_result).await;
                             match result {
@@ -304,7 +345,7 @@ impl BcCamera {
                                         uid_relay,
                                         disc.get_addr()
                                     );
-                                    Ok(CameraLocation::Udp(disc))
+                                    Ok(CameraLocation::Udp(disc, false))
                                 },
                                 Err(e) => Err(e),
                             }
@@ -338,6 +379,7 @@ impl BcCamera {
         let username: String = options.credentials.username.clone();
         let passwd: Option<String> = options.credentials.password.clone();
 
+        let mut direct_uid = None;
         let (sink, source): (BcConnSink, BcConnSource) = {
             match BcCamera::find_camera(options).await? {
                 CameraLocation::Tcp(addr) => {
@@ -346,7 +388,8 @@ impl BcCamera {
                         .split();
                     (Box::new(x), Box::new(r))
                 }
-                CameraLocation::Udp(discovery) => {
+                CameraLocation::Udp(discovery, is_direct) => {
+                    direct_uid = is_direct.then(|| options.uid.clone()).flatten();
                     let (x, r) = UdpSource::new_from_discovery(
                         discovery,
                         &username,
@@ -371,9 +414,26 @@ impl BcCamera {
             credentials: Credentials::new(username, passwd),
             abilities: Default::default(),
             cancel: CancellationToken::new(),
+            direct_uid,
         };
         me.keepalive().await?;
         Ok(me)
+    }
+
+    /// Call when a session on this connection failed to log in. If it was a direct
+    /// (remote/map) path, discovery uses the relay for this UID for a while instead
+    /// of picking the same dead path again.
+    pub fn direct_path_failed(&self) {
+        if let Some(uid) = self.direct_uid.as_ref() {
+            warn!(
+                "{}: Direct connection did not answer, using the Reolink relay for the next {}s",
+                uid,
+                DIRECT_RETRY.as_secs()
+            );
+            if let Ok(mut backoff) = DIRECT_BACKOFF.lock() {
+                backoff.insert(uid.clone(), std::time::Instant::now() + *DIRECT_RETRY);
+            }
+        }
     }
 
     /// This method will get a new message number and increment the message count atomically
@@ -474,4 +534,25 @@ fn test_md5_string() {
         md5_string("admin", ZeroLast),
         "21232F297A57A5A743894A0E4A801FC\0"
     );
+}
+
+#[cfg(test)]
+mod direct_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_expires() {
+        let uid = "TESTUID-BACKOFF";
+        assert!(!direct_backed_off(uid));
+        DIRECT_BACKOFF.lock().unwrap().insert(
+            uid.to_string(),
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        );
+        assert!(direct_backed_off(uid));
+        DIRECT_BACKOFF
+            .lock()
+            .unwrap()
+            .insert(uid.to_string(), std::time::Instant::now());
+        assert!(!direct_backed_off(uid));
+    }
 }

@@ -139,9 +139,13 @@ pub(crate) async fn connect_and_login(camera_config: &CameraConfig) -> Result<Bc
         _ => MaxEncryption::Aes,
     };
     info!("{}: Logging in", camera_config.name);
-    timeout(camera.login_with_maxenc(max_encryption))
-        .await
-        .with_context(|| format!("Failed to login to {}", camera_config.name))??;
+    let login = timeout(camera.login_with_maxenc(max_encryption)).await;
+    if !matches!(login, Ok(Ok(_))) {
+        // A direct UID path can complete its handshake yet never carry data;
+        // fall back to the relay next time instead of looping on it
+        camera.direct_path_failed();
+    }
+    login.with_context(|| format!("Failed to login to {}", camera_config.name))??;
 
     info!("{}: Connected and logged in", camera_config.name);
 
