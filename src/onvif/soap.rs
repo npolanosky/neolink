@@ -128,6 +128,9 @@ fn append_text(req: &mut SoapRequest, element: Option<&str>, text: &str) {
     target.get_or_insert_with(String::new).push_str(text);
 }
 
+/// Longest duration `parse_duration` returns; callers cap far lower anyway
+const MAX_DURATION_SECS: f64 = 24.0 * 3600.0;
+
 /// Parse the subset of xs:duration used for PTZ timeouts (`PT5S`, `PT1M30S`, `PT0.5S`)
 pub(crate) fn parse_duration(value: &str) -> Option<std::time::Duration> {
     let rest = value.trim().strip_prefix("PT")?;
@@ -148,14 +151,75 @@ pub(crate) fn parse_duration(value: &str) -> Option<std::time::Duration> {
             _ => return None,
         }
     }
-    if !num.is_empty() {
+    if !num.is_empty() || !secs.is_finite() || secs < 0.0 {
         return None;
     }
-    Some(std::time::Duration::from_secs_f64(secs))
+    std::time::Duration::try_from_secs_f64(secs.min(MAX_DURATION_SECS)).ok()
 }
 
+/// Seconds since the Unix epoch of an xs:dateTime such as `2026-10-14T05:00:00Z` or
+/// `2026-10-14T07:00:00.123+02:00` (no zone is taken as UTC)
+pub(crate) fn parse_date_time(value: &str) -> Option<i64> {
+    let (date, time) = value.trim().split_once(['T', 't'])?;
+    let mut date = date.splitn(3, '-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: i64 = date.next()?.parse().ok()?;
+    let day: i64 = date.next()?.parse().ok()?;
+
+    let (clock, offset) = if let Some(clock) = time.strip_suffix(['Z', 'z']) {
+        (clock, 0)
+    } else if let Some(i) = time.rfind(['+', '-']) {
+        let (clock, zone) = time.split_at(i);
+        let sign = if zone.starts_with('-') { -1 } else { 1 };
+        let (h, m) = zone[1..].split_once(':')?;
+        let (h, m): (i64, i64) = (h.parse().ok()?, m.parse().ok()?);
+        if h > 23 || m > 59 {
+            return None;
+        }
+        (clock, sign * (h * 3600 + m * 60))
+    } else {
+        (time, 0)
+    };
+    let mut clock = clock.splitn(3, ':');
+    let hour: i64 = clock.next()?.parse().ok()?;
+    let minute: i64 = clock.next()?.parse().ok()?;
+    let second = clock.next()?;
+    let second: i64 = second
+        .split_once('.')
+        .map_or(second, |(s, _)| s)
+        .parse()
+        .ok()?;
+
+    if !(1..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    // Days-from-civil (Howard Hinnant), the inverse of civil_from_unix
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+/// Escape for XML text or attributes, dropping characters XML 1.0 does not allow
+/// even escaped (camera preset names may contain control characters)
 pub(crate) fn escape(value: &str) -> String {
-    quick_xml::escape::escape(value).into_owned()
+    let valid: String = value
+        .chars()
+        .filter(|&c| {
+            matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..)
+        })
+        .collect();
+    quick_xml::escape::escape(&valid).into_owned()
 }
 
 const ENVELOPE_START: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -487,6 +551,47 @@ mod tests {
             Some(std::time::Duration::from_millis(500))
         );
         assert_eq!(parse_duration("5"), None);
+        // Absurd timeouts are capped rather than overflowing
+        assert_eq!(
+            parse_duration("PT99999999999999999999999S"),
+            Some(std::time::Duration::from_secs(86400))
+        );
+        assert_eq!(parse_duration(&format!("PT{}H", "9".repeat(400))), None);
+        assert_eq!(parse_duration("PT.S"), None);
+    }
+
+    #[test]
+    fn date_times() {
+        assert_eq!(parse_date_time("2026-10-14T05:06:07Z"), Some(1791954367));
+        assert_eq!(
+            parse_date_time("2026-10-14T07:06:07.123+02:00"),
+            Some(1791954367)
+        );
+        assert_eq!(
+            parse_date_time("2026-10-14T00:06:07-05:00"),
+            Some(1791954367)
+        );
+        assert_eq!(parse_date_time("2026-10-14T05:06:07"), Some(1791954367));
+        assert_eq!(parse_date_time("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_date_time("2024-02-29T00:00:00Z"), Some(1709164800));
+        assert_eq!(parse_date_time("yesterday"), None);
+        assert_eq!(parse_date_time("2026-13-01T00:00:00Z"), None);
+        // Out-of-range parts are rejected rather than overflowing
+        assert_eq!(parse_date_time("9223372036854775807-01-01T00:00:00Z"), None);
+        assert_eq!(
+            parse_date_time("2026-10-14T05:06:07+9223372036854775807:00"),
+            None
+        );
+    }
+
+    #[test]
+    fn escape_drops_invalid_characters() {
+        assert_eq!(
+            escape("Gate\u{1}\u{8} <1>\tA&B\u{FFFF}"),
+            "Gate &lt;1&gt;\tA&amp;B"
+        );
+        let xml = get_presets(&[(1, "Drive\u{0}way".to_string())]);
+        assert!(xml.contains("<tt:Name>Driveway</tt:Name>"));
     }
 
     #[test]

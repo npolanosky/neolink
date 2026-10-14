@@ -223,11 +223,22 @@ pub(crate) struct CameraConfig {
     pub(crate) ptz_speed: u8,
 
     /// Tilt speed, when it should differ from `ptz_speed`
-    #[validate(range(min = 1, max = 64, message = "Invalid PTZ tilt speed", code = "ptz_tilt_speed"))]
+    #[validate(range(
+        min = 1,
+        max = 64,
+        message = "Invalid PTZ tilt speed",
+        code = "ptz_tilt_speed"
+    ))]
     #[serde(default)]
     pub(crate) ptz_tilt_speed: Option<u8>,
 
     /// Stop every ONVIF move after this many ms, for small precise steps per press
+    #[validate(range(
+        min = 50,
+        max = 5000,
+        message = "Invalid PTZ nudge (50-5000 ms)",
+        code = "ptz_nudge_ms"
+    ))]
     #[serde(default)]
     pub(crate) ptz_nudge_ms: Option<u64>,
 
