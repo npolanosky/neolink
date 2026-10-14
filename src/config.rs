@@ -217,6 +217,20 @@ pub(crate) struct CameraConfig {
     #[serde(default)]
     pub(crate) onvif_port: Option<u16>,
 
+    /// Reolink pan speed (1-64) for an ONVIF velocity of 0.5 (Frigate's arrow buttons)
+    #[validate(range(min = 1, max = 64, message = "Invalid PTZ speed", code = "ptz_speed"))]
+    #[serde(default = "default_ptz_speed")]
+    pub(crate) ptz_speed: u8,
+
+    /// Tilt speed, when it should differ from `ptz_speed`
+    #[validate(range(min = 1, max = 64, message = "Invalid PTZ tilt speed", code = "ptz_tilt_speed"))]
+    #[serde(default)]
+    pub(crate) ptz_tilt_speed: Option<u8>,
+
+    /// Stop every ONVIF move after this many ms, for small precise steps per press
+    #[serde(default)]
+    pub(crate) ptz_nudge_ms: Option<u64>,
+
     /// Delay in ms before relay discovery starts (direct methods get a head start)
     #[serde(default = "default_relay_delay_ms", alias = "relay_delay")]
     pub(crate) relay_delay_ms: u64,
@@ -518,6 +532,10 @@ fn default_buffer_duration() -> u64 {
 
 fn default_max_discovery_retries() -> usize {
     10
+}
+
+fn default_ptz_speed() -> u8 {
+    32
 }
 
 fn default_relay_delay_ms() -> u64 {

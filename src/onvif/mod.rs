@@ -246,7 +246,23 @@ impl Bridge {
                     .unwrap_or(DEFAULT_MOVE_TIMEOUT)
                     .min(MAX_MOVE_TIMEOUT);
                 let (x, y) = req.pan_tilt.unwrap_or((0.0, 0.0));
-                self.continuous_move(x, y, move_timeout).await?;
+                let (pan_speed, tilt_speed, nudge) = {
+                    let cam = self.camera_config.borrow();
+                    let pan = cam.ptz_speed;
+                    (pan, cam.ptz_tilt_speed.unwrap_or(pan), cam.ptz_nudge_ms)
+                };
+                // Nudge mode: each press is a short fixed move, regardless of how
+                // late the Stop arrives (it can lag a lot over a relayed connection)
+                let move_timeout = match nudge {
+                    Some(ms) => move_timeout.min(Duration::from_millis(ms)),
+                    None => move_timeout,
+                };
+                let Some((direction, speed)) = velocity_to_command(x, y, pan_speed, tilt_speed)
+                else {
+                    self.stop().await?;
+                    return Ok(soap::empty("tptz:ContinuousMoveResponse"));
+                };
+                self.continuous_move(direction, speed, move_timeout).await?;
                 soap::empty("tptz:ContinuousMoveResponse")
             }
             "Stop" => {
@@ -320,10 +336,12 @@ impl Bridge {
         .map_err(|_| anyhow!("Camera did not answer in time"))?
     }
 
-    async fn continuous_move(&self, x: f32, y: f32, move_timeout: Duration) -> AnyResult<()> {
-        let Some((direction, speed)) = velocity_to_command(x, y) else {
-            return self.stop().await;
-        };
+    async fn continuous_move(
+        &self,
+        direction: BcDirection,
+        speed: f32,
+        move_timeout: Duration,
+    ) -> AnyResult<()> {
         let generation = self.motion.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.send_ptz(direction, speed).await?;
         self.motion.moving.store(true, Ordering::Relaxed);
@@ -388,9 +406,17 @@ fn reply(status: u16, xml: String) -> Response<Full<Bytes>> {
 }
 
 /// Pick the dominant axis: the camera only moves in one direction at a time
-fn velocity_to_command(x: f32, y: f32) -> Option<(BcDirection, f32)> {
+///
+/// `pan_speed`/`tilt_speed` are the Reolink speeds (1-64) for a velocity of 0.5,
+/// which is what Frigate's arrow buttons send; other velocities scale linearly.
+fn velocity_to_command(
+    x: f32,
+    y: f32,
+    pan_speed: u8,
+    tilt_speed: u8,
+) -> Option<(BcDirection, f32)> {
     const DEAD_ZONE: f32 = 0.01;
-    let (direction, magnitude) = if x.abs() >= y.abs() {
+    let (direction, magnitude, base) = if x.abs() >= y.abs() {
         (
             if x < 0.0 {
                 BcDirection::Left
@@ -398,6 +424,7 @@ fn velocity_to_command(x: f32, y: f32) -> Option<(BcDirection, f32)> {
                 BcDirection::Right
             },
             x.abs(),
+            pan_speed,
         )
     } else {
         (
@@ -407,12 +434,16 @@ fn velocity_to_command(x: f32, y: f32) -> Option<(BcDirection, f32)> {
                 BcDirection::Up
             },
             y.abs(),
+            tilt_speed,
         )
     };
     if magnitude < DEAD_ZONE {
         return None;
     }
-    Some((direction, (magnitude.min(1.0) * MAX_SPEED).max(1.0)))
+    Some((
+        direction,
+        (magnitude.min(1.0) * 2.0 * base as f32).clamp(1.0, MAX_SPEED),
+    ))
 }
 
 /// WS-Security UsernameToken: digest is Base64(SHA1(nonce + created + password))
@@ -442,13 +473,25 @@ mod tests {
 
     #[test]
     fn dominant_axis() {
-        let (d, s) = velocity_to_command(-0.5, 0.0).unwrap();
+        let (d, s) = velocity_to_command(-0.5, 0.0, 32, 32).unwrap();
         assert!(d == BcDirection::Left && s == 32.0);
-        let (d, _) = velocity_to_command(0.2, 0.6).unwrap();
+        let (d, _) = velocity_to_command(0.2, 0.6, 32, 32).unwrap();
         assert!(d == BcDirection::Up);
-        let (d, s) = velocity_to_command(0.0, -1.5).unwrap();
+        let (d, s) = velocity_to_command(0.0, -1.5, 32, 32).unwrap();
         assert!(d == BcDirection::Down && s == 64.0);
-        assert!(velocity_to_command(0.0, 0.0).is_none());
+        assert!(velocity_to_command(0.0, 0.0, 32, 32).is_none());
+    }
+
+    #[test]
+    fn per_axis_speed() {
+        // Frigate's buttons send 0.5, which maps to the configured speed
+        let (_, s) = velocity_to_command(0.5, 0.0, 8, 4).unwrap();
+        assert_eq!(s, 8.0);
+        let (_, s) = velocity_to_command(0.0, 0.5, 8, 4).unwrap();
+        assert_eq!(s, 4.0);
+        // Never below the camera's minimum speed
+        let (_, s) = velocity_to_command(0.05, 0.0, 1, 1).unwrap();
+        assert_eq!(s, 1.0);
     }
 
     #[test]
