@@ -55,7 +55,8 @@ address = "koty.lan:9000"
 # You can uncomment the following to permit only specfic users
 # permitted_users = [ "me" ]
 
-# By default "both" "mainStream" and "subStream" are connected
+# By default "all" streams are connected: mainStream, subStream and
+# externStream (where the camera has one)
 # If your device has user connection limits try a single stream instead.
 # stream = "mainStream"
 
@@ -78,6 +79,21 @@ address = "koty.lan:9000"
 # "cellular" # Cellular camera only support Relay and Map to speed up connecting to them this option will skip the local/remote
 #
 # discovery = "relay"
+
+# UID discovery runs all its methods at once and the first to connect wins.
+# This holds the relay back (in ms) so a direct path gets a head start.
+# relay_delay_ms = 500
+
+# Serve an ONVIF PTZ bridge for this camera on this port (one port per camera),
+# so NVRs like Frigate can pan, tilt and recall presets. Disabled when unset.
+# Runs in the rtsp and mqtt-rtsp modes only.
+# onvif_port = 8001
+# Camera speed (1-64) for an ONVIF velocity of 0.5 (Frigate's arrow buttons)
+# ptz_speed = 32
+# Tilt speed, when it should differ from ptz_speed
+# ptz_tilt_speed = 8
+# Stop every ONVIF move after this many ms (50-5000), for small fixed steps per press
+# ptz_nudge_ms = 300
 
 # Certain types of camera emit status messages (such as battery levels)
 #

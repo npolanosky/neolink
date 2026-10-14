@@ -14,7 +14,7 @@ Add one entry per camera under `cameras`:
 | `username` / `password` | yes | Camera login (same as the Reolink app). |
 | `address` | one of | `IP` or `IP:port`; port defaults to 9000. Use for cameras with a fixed IP. |
 | `uid` | one of | Camera UID (Reolink app → device info). Works anywhere the camera has internet. |
-| `stream` | no | `both` (default), `mainStream`, `subStream`. Each stream used is a separate connection to the camera. |
+| `stream` | no | `both`, `mainStream` or `subStream`. Unset: every stream the camera has (main, sub and, on some models, extern). Each stream used is a separate connection to the camera. |
 | `discovery` | no | UID lookup: `local`, `remote`, `map`, `relay` (default), `cellular`. |
 | `channel_id` | no | Channel on a Reolink NVR / hub, starting at 0. |
 | `enable_audio` | no | Default `true`. Set `false` to save CPU. |
@@ -40,7 +40,8 @@ Global options:
 | `local_ip` | (auto) | IP neolink registers with Reolink for cameras to connect back to. Defaults to the host's default-route IP. |
 
 `users` (optional) password-protects the RTSP server and the ONVIF bridge. If empty,
-anyone on the LAN can watch and move the cameras.
+anyone on the LAN can watch and move the cameras. `anyone` and `anonymous` are reserved
+and cannot be used as user names.
 
 ### Advanced: own neolink.toml
 
@@ -73,9 +74,13 @@ With `uid` set, neolink finds the camera wherever it is. In the log:
 ## Offline cameras
 
 When a camera is unreachable neolink keeps retrying in the background. With `use_splash`
-off, the stream path returns 404 until the camera is back: Frigate shows the camera as
-offline and retries every `retry_interval` seconds, without recording or detecting on
-anything.
+off, a camera's stream paths return 404 until it first connects after the add-on starts:
+Frigate shows the camera as offline and retries every `retry_interval` seconds, without
+recording or detecting on anything. Once the camera has connected its paths stay up; if
+it drops out later, clients that connect wait for the camera (up to their own timeout)
+rather than getting a 404.
+
+Blue Iris gives up on a camera for good after a 404, so turn `use_splash` on if you use it.
 
 ## Frigate
 

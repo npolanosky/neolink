@@ -209,10 +209,10 @@ name = "Camera01"
 username = "admin"
 password = "password"
 address = "192.168.1.10:9000"
-stream = "mainStream"          # "mainStream", "subStream", or "both" (default)
+stream = "mainStream"          # "mainStream", "subStream", "both", or "all" (default)
 enable_audio = true            # disable to save CPU (default: true)
 enable_low_latency = false     # reduce stream delay (default: false)
-discovery = "local"            # "local", "remote", "map", "relay", "cellular"
+discovery = "local"            # "local", "remote", "map", "relay" (default), "cellular"
 idle_disconnect = false        # disconnect when idle to save battery
 debug = false                  # dump raw XML from camera
 ```

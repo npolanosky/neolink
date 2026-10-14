@@ -44,7 +44,9 @@ address = "192.168.1.10:9000"    # direct IP connection
 uid = "ABCDEF0123456789"        # UID-based discovery
 
 # Stream selection
-stream = "both"                  # "mainStream", "subStream", or "both" (default)
+stream = "all"                   # "all" (default: main, sub and extern where the camera has
+                                 # one), "both" (main and sub), "mainStream", "subStream",
+                                 # "externStream" or "none"
 permitted_users = ["me"]         # restrict to specific users (default: all)
 enabled = true                   # disable without removing from config
 
@@ -59,7 +61,23 @@ update_time = false              # force camera clock sync on connect
 
 # NVR channel (for multi-camera NVRs)
 channel_id = 0                   # 0-indexed camera on NVR
+
+# Offline cameras (see below)
+use_splash = true                # default: true
+splash_pattern = "snow"          # "snow" (default), "smpte", "black", "checkers-8", ...
 ```
+
+### Offline cameras and `use_splash`
+
+With `use_splash = true` (the default) each stream path serves a test pattern
+until neolink has connected to the camera, so clients always find the path.
+
+With `use_splash = false` the paths are not mounted until the camera first
+connects after neolink starts: until then clients get a 404 (RTSP Not Found).
+Once the camera has connected the stream stays mounted, and clients that
+connect while the camera is offline wait for it instead. NVRs such as Frigate
+(go2rtc, ffmpeg) retry after a 404, but **Blue Iris gives up on a camera for
+good after a 404, so Blue Iris users should keep `use_splash = true`.**
 
 ## Discovery
 
@@ -75,7 +93,7 @@ method implicitly enables all prior methods.
 | `cellular` | Alias for map + relay only | For cellular cameras (skips local/remote) |
 
 ```toml
-discovery = "local"    # default; use "cellular" for cellular cameras
+discovery = "relay"    # default (every method); use "cellular" for cellular cameras
 ```
 
 If you know the camera's IP address, set `address` directly and skip discovery
@@ -139,16 +157,19 @@ name = "Camera01"
 onvif_port = 8001    # one port per camera; disabled when unset
 ptz_speed = 32       # camera speed (1-64) for an ONVIF velocity of 0.5 (Frigate's arrows)
 ptz_tilt_speed = 8   # optional, tilt speed when it should differ from ptz_speed
-ptz_nudge_ms = 300   # optional, stop each move after this long for small fixed steps
+ptz_nudge_ms = 300   # optional (50-5000), stop each move after this long for small fixed steps
 ```
 
-The service is at `http://<host>:<onvif_port>/onvif/device_service`. When
-`[[users]]` are configured the same credentials (and `permitted_users`) are
-required as a WS-Security UsernameToken.
+The service is at `http://<host>:<onvif_port>/onvif/device_service`. It runs
+alongside the RTSP server, so only in the `rtsp` mode (also the default when no
+subcommand is given) and the `mqtt-rtsp` mode. When `[[users]]` are configured
+the same credentials (and `permitted_users`) are required as a WS-Security
+UsernameToken.
 
 Supported: ContinuousMove (pan/tilt; the camera moves one axis at a time, so the
 larger of the two velocities wins), Stop, GetPresets, GotoPreset, GetStatus and
-GetStreamUri. The Baichuan protocol reports no pan/tilt position, so relative or
+GetStreamUri (the main stream, or the sub stream when only `subStream` is
+served). The Baichuan protocol reports no pan/tilt position, so relative or
 absolute moves and autotracking are not offered. A ContinuousMove without a
 Timeout stops after 10 seconds in case the Stop request is lost.
 

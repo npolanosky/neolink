@@ -364,7 +364,9 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                             .ok_or(anyhow!("RTSP server lacks mount point"))?;
                         // Without a splash the dummy has nothing to serve and GStreamer logs
                         // a CRITICAL on every client attempt, so leave the path unmounted (404)
-                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        // until the camera first connects; after that the stream stays mounted
+                        // and clients wait. Frigate retries on 404 but Blue Iris (above) does
+                        // not, so Blue Iris needs use_splash on (see docs/configuration.md).
                         if use_splash {
                             for path in paths.iter() {
                                 log::debug!("Path: {}", path);
@@ -403,7 +405,9 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                         // Create the dummy factory
                         // Without a splash the dummy has nothing to serve and GStreamer logs
                         // a CRITICAL on every client attempt, so leave the path unmounted (404)
-                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        // until the camera first connects; after that the stream stays mounted
+                        // and clients wait. Frigate retries on 404 but Blue Iris (above) does
+                        // not, so Blue Iris needs use_splash on (see docs/configuration.md).
                         if use_splash {
                             for path in paths.iter() {
                                 log::debug!("Path: {}", path);
@@ -442,7 +446,9 @@ async fn camera_main(camera: NeoInstance, rtsp: &NeoRtspServer) -> Result<()> {
                             .ok_or(anyhow!("RTSP server lacks mount point"))?;
                         // Without a splash the dummy has nothing to serve and GStreamer logs
                         // a CRITICAL on every client attempt, so leave the path unmounted (404)
-                        // until the stream is ready. NVRs like Frigate retry on 404.
+                        // until the camera first connects; after that the stream stays mounted
+                        // and clients wait. Frigate retries on 404 but Blue Iris (above) does
+                        // not, so Blue Iris needs use_splash on (see docs/configuration.md).
                         if use_splash {
                             for path in paths.iter() {
                                 log::debug!("Path: {}", path);
