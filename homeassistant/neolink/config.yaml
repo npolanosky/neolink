@@ -65,5 +65,6 @@ schema:
       # Cap every PTZ press to this many ms (small fixed steps, e.g. 300)
       ptz_nudge_ms: int(50,5000)?
   users:
-    - name: str
+    # Not blank, and not "anyone" or "anonymous" (reserved by neolink's permitted_users)
+    - name: "match(^(?!(?:anyone|anonymous)$).*\\S.*$)"
       password: password

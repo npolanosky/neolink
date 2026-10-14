@@ -7,7 +7,8 @@ OPTIONS=/data/options.json
 CUSTOM=/config/neolink.toml
 GENERATED=/data/neolink.toml
 
-export RUST_LOG="$(jq -r '.log_level // "info"' "$OPTIONS")"
+# An empty RUST_LOG would silence every log line
+export RUST_LOG="$(jq -r '(.log_level // "") | if test("^\\s*$") then "info" else . end' "$OPTIONS")"
 if [ "$(jq -r '.tunnel_handshake == false' "$OPTIONS")" = "true" ]; then
     export NEOLINK_TUNNEL_HANDSHAKE=0
 fi
@@ -67,7 +68,16 @@ else
     CONFIG="$GENERATED"
 
     port="$(jq -r '.rtsp_port' "$OPTIONS")"
-    jq -r --arg port "$port" '.cameras[] | "  rtsp://<HA-IP>:\($port)/\(.name)/main  and  /\(.name)/sub" + (if .onvif_port then "  (ONVIF :\(.onvif_port))" else "" end)' "$OPTIONS" \
+    # Only the paths served for each camera's stream setting (unset serves main and sub)
+    jq -r --arg port "$port" '
+      .cameras[] | .name as $n |
+      (if .stream == "mainStream" then ["main"]
+       elif .stream == "subStream" then ["sub"]
+       else ["main", "sub"] end) as $paths |
+      "  rtsp://<HA-IP>:\($port)/\($n)/\($paths[0])"
+        + ($paths[1:] | map("  and  /\($n)/\(.)") | join(""))
+        + (if .onvif_port then "  (ONVIF :\(.onvif_port))" else "" end)
+    ' "$OPTIONS" \
         | { echo "Streams:"; cat; }
 fi
 
