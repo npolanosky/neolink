@@ -101,6 +101,7 @@ impl AddressOrUid {
             },
             debug: camera_config.debug,
             max_discovery_retries: camera_config.max_discovery_retries,
+            relay_delay_ms: camera_config.relay_delay_ms,
         };
 
         trace!("Camera Info: {:?}", options);

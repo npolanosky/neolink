@@ -213,6 +213,10 @@ pub(crate) struct CameraConfig {
     )]
     pub(crate) max_discovery_retries: usize,
 
+    /// Delay in ms before relay discovery starts (direct methods get a head start)
+    #[serde(default = "default_relay_delay_ms", alias = "relay_delay")]
+    pub(crate) relay_delay_ms: u64,
+
     #[serde(default = "default_true", alias = "push", alias = "push_noti")]
     pub(crate) push_notifications: bool,
 
@@ -510,6 +514,10 @@ fn default_buffer_duration() -> u64 {
 
 fn default_max_discovery_retries() -> usize {
     10
+}
+
+fn default_relay_delay_ms() -> u64 {
+    500
 }
 
 fn default_2000() -> u64 {

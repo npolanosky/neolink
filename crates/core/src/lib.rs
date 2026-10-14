@@ -25,6 +25,7 @@
 //!     },
 //!     debug: false,
 //!     max_discovery_retries: 10,
+//!     relay_delay_ms: 500,
 //! };
 //! let mut camera = BcCamera::new(&options).await.unwrap();
 //! # })
@@ -49,6 +50,7 @@
 //! #    },
 //! #    debug: false,
 //! #    max_discovery_retries: 10,
+//! #    relay_delay_ms: 500,
 //! # };
 //! # let mut camera = BcCamera::new(&options).await.unwrap();
 //! camera.login().await;

@@ -475,7 +475,7 @@ impl Discoverer {
         let tid = generate_tid();
         let local_ip = get_local_ip()?;
         let local_addr = SocketAddr::new(local_ip, self.local_addr().port());
-        log::debug!("Registering {:?} to reolink", local_addr);
+        log::info!("Registering {} with reolink for UID {}", local_addr, uid);
         let local_ip = local_addr.ip();
         let local_port = local_addr.port();
         let local_family = if local_addr.ip().is_ipv4() { 4 } else { 6 };
@@ -618,12 +618,20 @@ impl Discoverer {
                         },
                     ) if cid == register_result.client_id
                         && &sid == register_sid
-                        && register_dmap
-                            .as_ref()
-                            .map(|dmap| &addr == dmap)
-                            .unwrap_or(false)
                         && &conn == "local" =>
                     {
+                        // The camera does not always reach us from the dmap address the
+                        // register server reported. Behind a VPN (e.g. a travel router
+                        // tunnelling into the home LAN) it arrives from the tunnel's NAT
+                        // address instead. sid and cid already tie the reply to our
+                        // registration, so accept it and talk back to where it came from.
+                        if register_dmap.as_ref() != Some(&addr) {
+                            log::info!(
+                                "Device initiated local connection from {} (registered dmap: {:?})",
+                                addr,
+                                register_dmap
+                            );
+                        }
                         Some((addr, tid, did))
                     }
                     _ => None,
@@ -729,12 +737,20 @@ impl Discoverer {
                         },
                     ) if cid == register_result.client_id
                         && &sid == register_sid
-                        && register_dmap
-                            .as_ref()
-                            .map(|dmap| &addr == dmap)
-                            .unwrap_or(false)
                         && &conn == "map" =>
                     {
+                        // The camera does not always reach us from the dmap address the
+                        // register server reported. Behind a VPN (e.g. a travel router
+                        // tunnelling into the home LAN) it arrives from the tunnel's NAT
+                        // address instead. sid and cid already tie the reply to our
+                        // registration, so accept it and talk back to where it came from.
+                        if register_dmap.as_ref() != Some(&addr) {
+                            log::info!(
+                                "Device initiated map connection from {} (registered dmap: {:?})",
+                                addr,
+                                register_dmap
+                            );
+                        }
                         Some((addr, tid, did))
                     }
                     _ => None,
@@ -1230,12 +1246,35 @@ impl Discovery {
     }
 }
 
+/// The IP we register with Reolink for the camera to connect back to.
+///
+/// Order: `NEOLINK_LOCAL_IP` env override, the source address of the default route,
+/// then the first non-loopback IPv4 interface. The first interface alone is not
+/// reliable on hosts with container bridges (e.g. docker0 / hassio on HAOS).
 fn get_local_ip() -> Result<std::net::IpAddr> {
+    if let Ok(ip) = std::env::var("NEOLINK_LOCAL_IP") {
+        match ip.parse::<std::net::IpAddr>() {
+            Ok(ip) => return Ok(ip),
+            Err(e) => log::warn!("Ignoring invalid NEOLINK_LOCAL_IP {:?}: {}", ip, e),
+        }
+    }
+    if let Some(ip) = default_route_ip() {
+        return Ok(ip);
+    }
     get_if_addrs::get_if_addrs()?
         .iter()
         .find(|i| !i.is_loopback() && matches!(i.addr, get_if_addrs::IfAddr::V4(_)))
         .map(|iface| Ok(iface.ip()))
         .unwrap_or_else(|| Err(Error::Other("No Local Ip Address Found")))
+}
+
+/// Source address the kernel picks for outbound traffic. Connecting a UDP socket
+/// only selects a route; no packet is sent.
+fn default_route_ip() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(1, 1, 1, 1), 9)).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
 }
 
 fn get_broadcasts(ports: &[u16]) -> Result<Vec<SocketAddr>> {

@@ -103,6 +103,11 @@ pub struct BcCameraOpt {
     pub discovery: DiscoveryMethods,
     /// Maximum number of retries for discovery
     pub max_discovery_retries: usize,
+    /// Delay in ms before relay discovery starts racing the direct methods
+    ///
+    /// The first method to connect wins, so a longer delay gives remote/map
+    /// (direct paths) a chance to beat the relay through Reolink's servers
+    pub relay_delay_ms: u64,
     /// Credentials for login
     pub credentials: Credentials,
     /// Toggle debug print of underlying data
@@ -288,7 +293,7 @@ impl BcCamera {
                         }, if allow_map => Ok(v),
                         Ok(v) = async {
                             let uid_relay = uid.clone();
-                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_millis(options.relay_delay_ms)).await;
                             info!("{}: Trying relay discovery", options.name);
                             let result = discovery.relay(&reg_result).await;
                             match result {
