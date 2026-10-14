@@ -213,6 +213,10 @@ pub(crate) struct CameraConfig {
     )]
     pub(crate) max_discovery_retries: usize,
 
+    /// Serve an ONVIF PTZ bridge for this camera on this port (disabled when unset)
+    #[serde(default)]
+    pub(crate) onvif_port: Option<u16>,
+
     /// Delay in ms before relay discovery starts (direct methods get a head start)
     #[serde(default = "default_relay_delay_ms", alias = "relay_delay")]
     pub(crate) relay_delay_ms: u64,

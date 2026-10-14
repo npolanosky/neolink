@@ -46,6 +46,7 @@ mod replay;
 #[cfg(feature = "gstreamer")]
 mod image;
 mod mqtt;
+mod onvif;
 mod pir;
 mod ptz;
 mod reboot;

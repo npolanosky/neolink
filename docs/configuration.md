@@ -39,7 +39,7 @@ name = "Camera01"
 username = "admin"
 password = "password"
 
-# Connection: use address OR uid (not both)
+# Connection: address, uid, or both (address tried first)
 address = "192.168.1.10:9000"    # direct IP connection
 uid = "ABCDEF0123456789"        # UID-based discovery
 
@@ -79,7 +79,24 @@ discovery = "local"    # default; use "cellular" for cellular cameras
 ```
 
 If you know the camera's IP address, set `address` directly and skip discovery
-entirely.
+entirely. Setting both `address` and `uid` tries the address first and falls
+back to UID discovery, which suits cameras that move between networks.
+
+Methods run concurrently and the first to connect wins. `relay_delay_ms`
+(default 500) holds the relay back so the direct methods get a head start:
+
+```toml
+relay_delay_ms = 5000
+```
+
+### Cameras behind a VPN or travel router
+
+`remote` and `map` work through a tunnel into neolink's LAN (for example a
+travel router running UniFi Teleport or WireGuard): the camera connects to the
+local address neolink registers with Reolink, and the handshake arrives from the
+tunnel's address. Neolink registers the source IP of its default route; set the
+`NEOLINK_LOCAL_IP` environment variable if that is not the address the camera
+can reach.
 
 ## Pause & Idle Disconnect
 
@@ -108,6 +125,39 @@ received.
 
 > **Note:** Push notification wakeup is no longer available (Google removed the
 > required APIs).
+
+## ONVIF PTZ
+
+Neolink can expose an ONVIF device per camera so NVRs that drive PTZ over ONVIF
+(such as Frigate) can pan, tilt and recall presets:
+
+```toml
+[[cameras]]
+name = "Camera01"
+onvif_port = 8001    # one port per camera; disabled when unset
+```
+
+The service is at `http://<host>:<onvif_port>/onvif/device_service`. When
+`[[users]]` are configured the same credentials (and `permitted_users`) are
+required as a WS-Security UsernameToken.
+
+Supported: ContinuousMove (pan/tilt; the camera moves one axis at a time, so the
+larger of the two velocities wins), Stop, GetPresets, GotoPreset, GetStatus and
+GetStreamUri. The Baichuan protocol reports no pan/tilt position, so relative or
+absolute moves and autotracking are not offered. A ContinuousMove without a
+Timeout stops after 10 seconds in case the Stop request is lost.
+
+Frigate example:
+
+```yaml
+cameras:
+  camera01:
+    onvif:
+      host: 192.168.1.20
+      port: 8001
+      user: frigate       # only when [[users]] are set
+      password: secret
+```
 
 ## MQTT
 
