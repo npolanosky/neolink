@@ -1,3 +1,4 @@
+use super::discovery::packet_kind;
 use super::DiscoveryResult;
 use crate::bc::codex::BcCodex;
 use crate::bc::model::*;
@@ -10,6 +11,7 @@ use futures::{
     sink::{Sink, SinkExt},
     stream::{IntoAsyncRead, Stream, StreamExt, TryStreamExt},
 };
+use lazy_static::lazy_static;
 use rand::{seq::SliceRandom, RngExt};
 use std::collections::BTreeMap;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
@@ -37,6 +39,26 @@ use tokio_util::{
 
 const MTU: usize = 1350;
 const UDPDATA_HEADER_SIZE: usize = 20;
+/// How many received packets a session logs at debug level
+const LOGGED_PACKETS: u32 = 20;
+lazy_static! {
+    /// How long a session waits for any packet before giving up.
+    /// `NEOLINK_UDP_TIMEOUT_SECS` overrides it for field tests.
+    static ref TIME_OUT: Duration = {
+        const DEFAULT: u64 = 10;
+        let secs = match std::env::var("NEOLINK_UDP_TIMEOUT_SECS") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(secs) if secs > 0 => secs,
+                _ => {
+                    log::warn!("Ignoring invalid NEOLINK_UDP_TIMEOUT_SECS {:?}", value);
+                    DEFAULT
+                }
+            },
+            Err(_) => DEFAULT,
+        };
+        Duration::from_secs(secs)
+    };
+}
 
 pub(crate) type InnerFramed = Framed<Compat<IntoAsyncRead<UdpPayloadSource>>, BcCodex>;
 pub(crate) struct UdpSource {
@@ -324,10 +346,12 @@ impl UdpPayloadInner {
         let camera_addr = inner.addr;
         let cancel = CancellationToken::new();
         log::debug!(
-            "UDP session with {} (client id {}, camera id {})",
+            "UDP session with {} from {:?} (client id {}, camera id {}, timeout {}s)",
             camera_addr,
+            inner.inner.get_ref().local_addr(),
             client_id,
-            camera_id
+            camera_id,
+            TIME_OUT.as_secs()
         );
         // Data in this needs to be passed into the socket regularly
         // especially the ACK packets on UDP. The thread must not lock
@@ -346,9 +370,9 @@ impl UdpPayloadInner {
         let socket_out_tx = socket_out_tx.clone();
         let thread_client_id = client_id;
         let thread_camera_id = camera_id;
-        const TIME_OUT: u64 = 10;
-        let mut recv_timeout = Box::pin(sleep(Duration::from_secs(TIME_OUT)));
-        let mut first_packet = true;
+        let mut recv_timeout = Box::pin(sleep(*TIME_OUT));
+        let started = Instant::now();
+        let mut packets_logged = 0;
         set.spawn(async move {
             let result = tokio::select! {
                 _ = send_cancel.cancelled() => {
@@ -363,11 +387,19 @@ impl UdpPayloadInner {
                             packet = inner.next() => {
                                 log::trace!("Cam->App");
                                 let packet = packet.ok_or(Error::BcUdpDropReciver(BcUdpDropReciverKind::NoneRecieved))??;
-                                if first_packet {
-                                    first_packet = false;
-                                    log::debug!("UDP session with {}: first packet from {}", thread_camera_addr, packet.1);
+                                // Enough to see who talks to us when a session stays silent
+                                if packets_logged < LOGGED_PACKETS {
+                                    packets_logged += 1;
+                                    log::debug!(
+                                        "UDP session with {}: rx #{} {} from {} after {}ms",
+                                        thread_camera_addr,
+                                        packets_logged,
+                                        packet_kind(&packet.0),
+                                        packet.1,
+                                        started.elapsed().as_millis()
+                                    );
                                 }
-                                recv_timeout.as_mut().reset(Instant::now() + Duration::from_secs(TIME_OUT));
+                                recv_timeout.as_mut().reset(Instant::now() + *TIME_OUT);
                                 // let packet = socket_rx.next().await.ok_or(Error::BcUdpDropReciver)??;
                                 socket_out_tx.try_send(packet).map_err(|e| Error::BcUdpDropReciver(BcUdpDropReciverKind::SendFailed(format!("{e:?}"))))?;
                                 continue;

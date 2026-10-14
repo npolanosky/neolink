@@ -19,7 +19,8 @@ use rand::{seq::SliceRandom, RngExt};
 use std::collections::{btree_map::Entry, BTreeMap, HashSet};
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use tokio::time::MissedTickBehavior;
 use tokio::{
     net::UdpSocket,
@@ -121,6 +122,8 @@ pub(crate) struct Discoverer {
     handlers: Handlers,
     local_addr: SocketAddr,
     cancel: CancellationToken,
+    /// When a camera first confirmed a connection, for the receive logs
+    confirmed_at: Arc<OnceLock<Instant>>,
 }
 
 fn valid_ip(ip: &str) -> bool {
@@ -150,6 +153,8 @@ impl Discoverer {
         let thread_subscriber = subsribers.clone();
         let thread_handlers = handlers.clone();
         let thread_cancel = cancel.clone();
+        let confirmed_at: Arc<OnceLock<Instant>> = Default::default();
+        let thread_confirmed_at = confirmed_at.clone();
         set.spawn(async move {
             let mut bad_packets: u64 = 0;
             tokio::select! {
@@ -170,7 +175,19 @@ impl Discoverer {
                                         bcudp.tid,
                                         addr
                                     );
-                                } else if !is_heartbeat(&bcudp.payload) {
+                                } else if let Some(confirmed_at) = thread_confirmed_at.get() {
+                                    // Everything, heartbeats included, to see what the
+                                    // camera still sends us once it has confirmed
+                                    log::debug!(
+                                        "Discovery rx {} (tid {}) from {} {}ms after the confirm",
+                                        payload_kind(&bcudp.payload),
+                                        bcudp.tid,
+                                        addr,
+                                        confirmed_at.elapsed().as_millis()
+                                    );
+                                } else if !is_heartbeat(&bcudp.payload)
+                                    || matches!(bcudp.payload, UdpXml::D2cHb(_))
+                                {
                                     log::debug!(
                                         "Discovery rx {} (tid {}) from {}",
                                         payload_kind(&bcudp.payload),
@@ -195,9 +212,17 @@ impl Discoverer {
                                     thread_subscriber.write().await.remove(&tid);
                                 }
                             }
-                            Some(Ok(bcudp)) => {
+                            Some(Ok((bcudp, addr))) => {
                                 // Only discovery packets should be possible atm
-                                log::debug!("Got non Discovery during discovery: {:?}", bcudp);
+                                log::debug!(
+                                    "Got non Discovery during discovery: {} from {} {}",
+                                    packet_kind(&bcudp),
+                                    addr,
+                                    thread_confirmed_at.get().map_or_else(
+                                        || "before any confirm".to_string(),
+                                        |t| format!("{}ms after the confirm", t.elapsed().as_millis())
+                                    )
+                                );
                             }
                             Some(Err(e)) => {
                                 // Anyone can send to this port, so one bad datagram must
@@ -247,7 +272,13 @@ impl Discoverer {
             handlers,
             local_addr,
             cancel,
+            confirmed_at,
         })
+    }
+
+    /// Note when a camera confirmed, for the receive logs
+    fn mark_confirmed(&self) {
+        let _ = self.confirmed_at.set(Instant::now());
     }
 
     async fn get_socket(&self) -> Arc<UdpSocket> {
@@ -840,6 +871,7 @@ impl Discoverer {
             })
             .await??;
 
+        self.mark_confirmed();
         let result = ConnectResult {
             addr,
             client_id: register_result.client_id,
@@ -986,6 +1018,7 @@ impl Discoverer {
             })
             .await??;
 
+        self.mark_confirmed();
         let result = ConnectResult {
             addr,
             client_id: register_result.client_id,
@@ -1047,6 +1080,7 @@ impl Discoverer {
             })
             .await?;
 
+        self.mark_confirmed();
         let result = ConnectResult {
             addr: final_addr,
             client_id: register_result.client_id,
@@ -1126,6 +1160,7 @@ impl Discoverer {
             })
             .await??;
 
+        self.mark_confirmed();
         let result = ConnectResult {
             addr: final_addr,
             client_id: register_result.client_id,
@@ -1446,6 +1481,23 @@ fn is_heartbeat(payload: &UdpXml) -> bool {
 fn payload_kind(payload: &UdpXml) -> String {
     let debug = format!("{:?}", payload);
     debug.split('(').next().unwrap_or_default().to_string()
+}
+
+/// Short description of any UDP packet for logs, without the payload
+pub(super) fn packet_kind(packet: &BcUdp) -> String {
+    match packet {
+        BcUdp::Discovery(disc) => format!("{} (tid {})", payload_kind(&disc.payload), disc.tid),
+        BcUdp::Ack(ack) => format!(
+            "ACK (connection id {}, packet id {})",
+            ack.connection_id, ack.packet_id as i32
+        ),
+        BcUdp::Data(data) => format!(
+            "DATA (connection id {}, packet id {}, {} bytes)",
+            data.connection_id,
+            data.packet_id,
+            data.payload.len()
+        ),
+    }
 }
 
 /// The IP we register with Reolink for the camera to connect back to.
