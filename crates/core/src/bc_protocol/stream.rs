@@ -90,25 +90,46 @@ impl StreamData {
     }
 }
 
+/// How long a cancelled stream task is given to send the stop command to the
+/// camera after its [`StreamData`] is dropped before it is forcibly aborted
+const STOP_GRACE_PERIOD: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
 impl Drop for StreamData {
     fn drop(&mut self) {
         log::info!("StreamData::drop: starting");
         self.abort_handle.cancel();
         log::info!("StreamData::drop: abort_handle cancelled");
-        if let Some(handle) = self.handle.as_ref() {
+        if let Some(mut handle) = self.handle.take() {
             if handle.is_finished() {
                 log::info!("StreamData::drop: handle is finished, dropping");
+            } else if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                // This is expected: after cancellation the task still has to send
+                // the stop command to the camera and wait (up to 2s) for the reply.
+                // We don't block here but we also don't let it run forever, if it
+                // gets stuck (e.g. on a stalled connection) it is aborted after
+                // a grace period so it can't hold its subscription/connection
+                log::info!("StreamData::drop: handle is not finished, stopping in background");
+                rt.spawn(async move {
+                    if tokio::time::timeout(STOP_GRACE_PERIOD, &mut handle)
+                        .await
+                        .is_err()
+                    {
+                        log::warn!(
+                            "StreamData::drop: task did not stop within {:?}, aborting",
+                            STOP_GRACE_PERIOD
+                        );
+                        handle.abort();
+                    }
+                });
             } else {
-                log::warn!("StreamData::drop: handle is NOT finished, detaching (task may continue)");
+                // No runtime to watch it on, dropping the handle detaches it
+                log::warn!(
+                    "StreamData::drop: handle is NOT finished, detaching (task may continue)"
+                );
             }
         } else {
             log::info!("StreamData::drop: no handle to drop");
         }
-        // Just drop the handle. If it's finished, dropping is fine.
-        // If it's not finished, dropping detaches it (task continues but we don't wait).
-        // We've already cancelled via abort_handle, so the task should finish soon.
-        // This avoids spawning a task that keeps the runtime alive.
-        self.handle.take();
         log::info!("StreamData::drop: complete");
     }
 }
@@ -214,19 +235,27 @@ impl BcCamera {
 
             sub_video.send(start_video).await?;
 
-            let msg = sub_video.recv().await?;
-            if let BcMeta {
-                response_code: 200, ..
-            } = msg.meta
-            {
-            } else {
-                return Err(Error::UnintelligibleReply {
-                    _reply: std::sync::Arc::new(Box::new(msg)),
-                    why: "The camera did not accept the stream start command.",
-                });
-            }
+            // If we are cancelled before the camera replies (or it never replies)
+            // skip straight to sending the stop command
+            let started = tokio::select! {
+                _ = abort_handle_thread.cancelled() => false,
+                msg = sub_video.recv() => {
+                    let msg = msg?;
+                    if let BcMeta {
+                        response_code: 200, ..
+                    } = msg.meta
+                    {
+                        true
+                    } else {
+                        return Err(Error::UnintelligibleReply {
+                            _reply: std::sync::Arc::new(Box::new(msg)),
+                            why: "The camera did not accept the stream start command.",
+                        });
+                    }
+                }
+            };
 
-            {
+            if started {
                 let mut media_sub = sub_video.bcmedia_stream(strict);
 
                 tokio::select! {
@@ -241,6 +270,12 @@ impl BcCamera {
                     } => {}
                 }
             }
+
+            // We no longer read the video data so drop the subscription now. This
+            // closes its channel so bcconn stops routing to it, otherwise the
+            // video the camera sends before it processes the stop would fill it
+            // and spam "Channel full" warnings
+            drop(sub_video);
 
             let stop_video = Bc::new_from_xml(
                 BcMeta {
@@ -370,5 +405,33 @@ impl BcCamera {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_drop_aborts_stuck_task() {
+        let (_tx, rx) = channel(1);
+        // Closed when the task's future is dropped (finished or aborted)
+        let (alive_tx, mut alive_rx) = channel::<()>(1);
+        // A task that ignores cancellation and never finishes
+        let handle = task::spawn(async move {
+            let _alive = alive_tx;
+            futures::future::pending::<()>().await;
+            Ok(())
+        });
+        drop(StreamData::from_parts(handle, rx, CancellationToken::new()));
+
+        // Still allowed to run during the grace period
+        tokio::time::sleep(STOP_GRACE_PERIOD / 2).await;
+        assert_eq!(alive_rx.try_recv(), Err(TryRecvError::Empty));
+
+        // Aborted once the grace period is over
+        tokio::time::sleep(STOP_GRACE_PERIOD).await;
+        assert_eq!(alive_rx.try_recv(), Err(TryRecvError::Disconnected));
     }
 }
