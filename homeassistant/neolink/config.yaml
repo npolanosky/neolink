@@ -1,0 +1,59 @@
+# Home Assistant app (add-on) manifest: https://developers.home-assistant.io/docs/add-ons/configuration
+# Local add-on: copy this folder to /addons on HAOS and the Supervisor builds the Dockerfile
+# on the box. The Dockerfile wraps the prebuilt GHCR image from this fork (built by
+# .github/workflows/docker-ghcr.yml), so no Rust compile happens on the HA host.
+name: Neolink
+version: "0.2.0"
+slug: neolink
+description: Reolink Baichuan (port 9000) to RTSP proxy, for Frigate and other NVRs
+url: https://github.com/npolanosky/neolink
+arch:
+  - amd64
+startup: services
+boot: auto
+# Host network: UID cameras (battery models) need UDP broadcast discovery, which does not
+# cross the hassio bridge. Port 8554 on the host is Frigate's go2rtc, hence rtsp_port 8654.
+host_network: true
+# /config in the container = host addon_configs/local_neolink. A neolink.toml placed there
+# replaces the generated config (full access to every option, MQTT included).
+map:
+  - addon_config:rw
+options:
+  rtsp_port: 8654
+  log_level: info
+  relay_delay_ms: 5000
+  use_splash: false
+  cameras:
+    - name: camera1
+      username: admin
+      password: ""
+      address: "192.168.1.50"
+  users: []
+schema:
+  rtsp_port: port
+  # RUST_LOG syntax: a level, or e.g. "info,neolink_core::bc_protocol::connection::discovery=trace"
+  log_level: str
+  # Head start for direct UID connections (remote/map) before the Reolink relay joins
+  relay_delay_ms: int(0,60000)
+  # Neolink's "please stand by" test pattern while a camera is offline. Off: the stream is
+  # simply unavailable, so Frigate does not record or run detection on the pattern.
+  use_splash: bool
+  # IP registered with Reolink for cameras to connect back to (default: default-route IP)
+  local_ip: str?
+  cameras:
+    - name: match(^[A-Za-z0-9_-]+$)
+      username: str
+      password: password
+      address: str?
+      uid: str?
+      channel_id: int(0,31)?
+      stream: list(both|mainStream|subStream)?
+      discovery: list(local|remote|map|relay|cellular)?
+      enable_audio: bool?
+      enable_low_latency: bool?
+      idle_disconnect: bool?
+      # ONVIF PTZ bridge for this camera (one port per camera, e.g. 8001)
+      onvif_port: port?
+  users:
+    - name: str
+      password: password
