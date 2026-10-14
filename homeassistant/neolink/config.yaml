@@ -3,7 +3,7 @@
 # on the box. The Dockerfile wraps the prebuilt GHCR image from this fork (built by
 # .github/workflows/docker-ghcr.yml), so no Rust compile happens on the HA host.
 name: Neolink
-version: "0.3.0"
+version: "0.4.0"
 slug: neolink
 description: Reolink Baichuan (port 9000) to RTSP proxy, for Frigate and other NVRs
 url: https://github.com/npolanosky/neolink
@@ -58,6 +58,12 @@ schema:
       idle_disconnect: bool?
       # ONVIF PTZ bridge for this camera (one port per camera, e.g. 8001)
       onvif_port: port?
+      # PTZ speed (1-64) for Frigate's arrow buttons; default 32. Lower = finer control
+      ptz_speed: int(1,64)?
+      # Tilt speed when it should differ from ptz_speed
+      ptz_tilt_speed: int(1,64)?
+      # Cap every PTZ press to this many ms (small fixed steps, e.g. 300)
+      ptz_nudge_ms: int(50,5000)?
   users:
     - name: str
       password: password

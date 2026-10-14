@@ -56,6 +56,9 @@ else
         optraw("enable_low_latency"),
         optraw("idle_disconnect"),
         optraw("onvif_port"),
+        optraw("ptz_speed"),
+        optraw("ptz_tilt_speed"),
+        optraw("ptz_nudge_ms"),
         "relay_delay_ms = \($root.relay_delay_ms // 500)",
         "use_splash = \($root.use_splash // false)",
         "")

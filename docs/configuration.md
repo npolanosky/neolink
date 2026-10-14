@@ -137,6 +137,9 @@ Neolink can expose an ONVIF device per camera so NVRs that drive PTZ over ONVIF
 [[cameras]]
 name = "Camera01"
 onvif_port = 8001    # one port per camera; disabled when unset
+ptz_speed = 32       # camera speed (1-64) for an ONVIF velocity of 0.5 (Frigate's arrows)
+ptz_tilt_speed = 8   # optional, tilt speed when it should differ from ptz_speed
+ptz_nudge_ms = 300   # optional, stop each move after this long for small fixed steps
 ```
 
 The service is at `http://<host>:<onvif_port>/onvif/device_service`. When

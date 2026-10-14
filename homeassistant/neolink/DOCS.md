@@ -21,6 +21,9 @@ Add one entry per camera under `cameras`:
 | `enable_low_latency` | no | Default `false`. |
 | `idle_disconnect` | no | Battery cameras: disconnect when no client is watching. |
 | `onvif_port` | no | Serve an ONVIF PTZ bridge for this camera on this port (one port per camera). |
+| `ptz_speed` | no | Camera speed (1-64) for Frigate's PTZ arrows. Default 32; lower for finer control. |
+| `ptz_tilt_speed` | no | Tilt speed if it should differ (tilt range is usually much smaller than pan). |
+| `ptz_nudge_ms` | no | Stop every PTZ press after this many ms, giving small fixed steps (e.g. 300). Helps over the relay, where the Stop can arrive late. |
 
 `address` and `uid` can both be set: neolink tries TCP to `address` first and falls back
 to UID discovery when that fails. Useful for cameras that move between networks.
