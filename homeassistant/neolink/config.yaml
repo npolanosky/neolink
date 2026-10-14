@@ -3,7 +3,7 @@
 # on the box. The Dockerfile wraps the prebuilt GHCR image from this fork (built by
 # .github/workflows/docker-ghcr.yml), so no Rust compile happens on the HA host.
 name: Neolink
-version: "0.8.0"
+version: "0.8.1"
 slug: neolink
 description: Reolink Baichuan (port 9000) to RTSP proxy, for Frigate and other NVRs
 url: https://github.com/npolanosky/neolink
