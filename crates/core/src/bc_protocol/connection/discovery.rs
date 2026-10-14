@@ -680,30 +680,54 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        self.retry_send(msg, addr, |bc, _| {
-            trace!("msg: {:?}", &bc);
-            match bc {
-                UdpDiscovery {
-                    tid: _,
-                    payload:
-                        UdpXml::D2cCfm(D2cCfm {
-                            sid,
-                            cid,
-                            did,
-                            conn,
-                            ..
-                        }),
-                } if sid == register_result.sid
-                    && did == local_did
-                    && cid == register_result.client_id
-                    && &conn == "local" =>
-                {
-                    Some(())
+        let local_did = self
+            .retry_send(msg, addr, |bc, from| {
+                trace!("msg: {:?}", &bc);
+                match bc {
+                    // Match on sid/cid like client_initiated_dev does. Through a VPN
+                    // tunnel the camera's confirm arrived (same tid) but was rejected by
+                    // the stricter did/conn match, so the handshake retried until the
+                    // relay won. The confirmed did is the one to use from here on.
+                    UdpDiscovery {
+                        tid: _,
+                        payload: UdpXml::D2cCfm(cfm),
+                    } if cfm.sid == register_result.sid && cfm.cid == register_result.client_id => {
+                        if cfm.did != local_did || cfm.conn != "local" {
+                            log::debug!(
+                                "D2C_CFM from {} differs from its D2C_T (did {}, conn local): {:?}",
+                                from,
+                                local_did,
+                                cfm
+                            );
+                        }
+                        if cfm.rsp < 0 {
+                            log::warn!(
+                                "Camera refused the local connection from {}: {:?}",
+                                from,
+                                cfm
+                            );
+                            Some(Err(Error::Other("Camera refused the connection")))
+                        } else {
+                            Some(Ok(cfm.did))
+                        }
+                    }
+                    UdpDiscovery {
+                        tid: _,
+                        payload: UdpXml::D2cCfm(cfm),
+                    } => {
+                        log::debug!(
+                            "Ignoring D2C_CFM from {} for another session (want sid {} cid {}, local): {:?}",
+                            from,
+                            register_result.sid,
+                            register_result.client_id,
+                            cfm
+                        );
+                        None
+                    }
+                    _ => None,
                 }
-                _ => None,
-            }
-        })
-        .await?;
+            })
+            .await??;
 
         let permit = self
             .semaphore
@@ -804,30 +828,54 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        self.retry_send(msg, addr, |bc, _| {
-            trace!("msg: {:?}", &bc);
-            match bc {
-                UdpDiscovery {
-                    tid: _,
-                    payload:
-                        UdpXml::D2cCfm(D2cCfm {
-                            sid,
-                            cid,
-                            did,
-                            conn,
-                            ..
-                        }),
-                } if sid == register_result.sid
-                    && did == local_did
-                    && cid == register_result.client_id
-                    && &conn == "map" =>
-                {
-                    Some(())
+        let local_did = self
+            .retry_send(msg, addr, |bc, from| {
+                trace!("msg: {:?}", &bc);
+                match bc {
+                    // Match on sid/cid like client_initiated_dev does. Through a VPN
+                    // tunnel the camera's confirm arrived (same tid) but was rejected by
+                    // the stricter did/conn match, so the handshake retried until the
+                    // relay won. The confirmed did is the one to use from here on.
+                    UdpDiscovery {
+                        tid: _,
+                        payload: UdpXml::D2cCfm(cfm),
+                    } if cfm.sid == register_result.sid && cfm.cid == register_result.client_id => {
+                        if cfm.did != local_did || cfm.conn != "map" {
+                            log::debug!(
+                                "D2C_CFM from {} differs from its D2C_T (did {}, conn map): {:?}",
+                                from,
+                                local_did,
+                                cfm
+                            );
+                        }
+                        if cfm.rsp < 0 {
+                            log::warn!(
+                                "Camera refused the map connection from {}: {:?}",
+                                from,
+                                cfm
+                            );
+                            Some(Err(Error::Other("Camera refused the connection")))
+                        } else {
+                            Some(Ok(cfm.did))
+                        }
+                    }
+                    UdpDiscovery {
+                        tid: _,
+                        payload: UdpXml::D2cCfm(cfm),
+                    } => {
+                        log::debug!(
+                            "Ignoring D2C_CFM from {} for another session (want sid {} cid {}, map): {:?}",
+                            from,
+                            register_result.sid,
+                            register_result.client_id,
+                            cfm
+                        );
+                        None
+                    }
+                    _ => None,
                 }
-                _ => None,
-            }
-        })
-        .await?;
+            })
+            .await??;
 
         let permit = self
             .semaphore
