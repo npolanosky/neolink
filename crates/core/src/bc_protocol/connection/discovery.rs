@@ -88,6 +88,9 @@ lazy_static! {
     static ref TCP_WAIT: Duration = Duration::from_secs(4);
     /// How long to wait before resending
     static ref RESEND_WAIT: Duration = Duration::from_millis(500);
+    /// How long a register server may keep answering without any address
+    /// before we move on to the next one (see `register_address`)
+    static ref UNUSABLE_REGISTER_WAIT: Duration = Duration::from_secs(3);
     /// Accept device initiated handshakes from any source address (see
     /// `device_initiated_dev`). On by default; `NEOLINK_TUNNEL_HANDSHAKE=0`
     /// restores the strict dmap-only check.
@@ -670,6 +673,11 @@ impl Discoverer {
             trace!("Registering: {:?}", c2r_c);
         }
 
+        // Some register servers keep answering a UID without ever giving an
+        // address, which used to hold up registration for the full
+        // MAXIMUM_WAIT before the next server was tried
+        let first_unusable: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
         // Send and await acceptance
         let (sid, dev, dmap, relay) = self
             .retry_send(msg, lookup.reg, |bc, socket| {
@@ -741,6 +749,28 @@ impl Discoverer {
                         && (rsp == -1 || rsp == -3) =>
                     {
                         Some(Err(Error::RegisterError))
+                    }
+                    UdpDiscovery {
+                        tid: _,
+                        payload: UdpXml::R2cCr(r2c_c_r),
+                    } => {
+                        let mut first = first_unusable.lock().unwrap();
+                        let first = first.get_or_insert_with(|| {
+                            debug!(
+                                "Register server {} has no address for {}: {:?}",
+                                lookup.reg, uid, r2c_c_r
+                            );
+                            Instant::now()
+                        });
+                        if first.elapsed() >= *UNUSABLE_REGISTER_WAIT {
+                            debug!(
+                                "Register server {} still has no address for {}, trying the next one",
+                                lookup.reg, uid
+                            );
+                            Some(Err(Error::RegisterError))
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 }
