@@ -348,6 +348,7 @@ impl UdpPayloadInner {
         let thread_camera_id = camera_id;
         const TIME_OUT: u64 = 10;
         let mut recv_timeout = Box::pin(sleep(Duration::from_secs(TIME_OUT)));
+        let mut first_packet = true;
         set.spawn(async move {
             let result = tokio::select! {
                 _ = send_cancel.cancelled() => {
@@ -362,6 +363,10 @@ impl UdpPayloadInner {
                             packet = inner.next() => {
                                 log::trace!("Cam->App");
                                 let packet = packet.ok_or(Error::BcUdpDropReciver(BcUdpDropReciverKind::NoneRecieved))??;
+                                if first_packet {
+                                    first_packet = false;
+                                    log::debug!("UDP session with {}: first packet from {}", thread_camera_addr, packet.1);
+                                }
                                 recv_timeout.as_mut().reset(Instant::now() + Duration::from_secs(TIME_OUT));
                                 // let packet = socket_rx.next().await.ok_or(Error::BcUdpDropReciver)??;
                                 socket_out_tx.try_send(packet).map_err(|e| Error::BcUdpDropReciver(BcUdpDropReciverKind::SendFailed(format!("{e:?}"))))?;

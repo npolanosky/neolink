@@ -680,7 +680,7 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        self.retry_send(msg, addr, |bc, from| {
+        let confirmed_conn = self.retry_send(msg, addr, |bc, from| {
                 trace!("msg: {:?}", &bc);
                 match bc {
                     // Match on sid/cid like client_initiated_dev does. Through a VPN
@@ -709,7 +709,7 @@ impl Discoverer {
                             );
                             Some(Err(Error::Other("Camera refused the connection")))
                         } else {
-                            Some(Ok(()))
+                            Some(Ok(cfm.conn.clone()))
                         }
                     }
                     UdpDiscovery {
@@ -744,7 +744,9 @@ impl Discoverer {
             camera_id: local_did,
         };
 
-        // Confirm local to register
+        // Confirm to register with the connection type the camera confirmed. Through
+        // a VPN tunnel the camera answers a "local" D2C_T with a "map" D2C_CFM, and
+        // reporting "local" left the camera silent once the session started.
         let msg = UdpDiscovery {
             tid: 0,
             payload: UdpXml::C2rCfm(C2rCfm {
@@ -752,7 +754,7 @@ impl Discoverer {
                 cid: result.client_id,
                 did: result.camera_id,
                 rsp: 0,
-                conn: "local".to_string(),
+                conn: confirmed_conn,
             }),
         };
 
@@ -829,7 +831,7 @@ impl Discoverer {
         // confirmed: a device initiated handshake can arrive over a path that
         // never completes (e.g. through a VPN tunnel), and holding the permit
         // while waiting would block the relay until this times out.
-        self.retry_send(msg, addr, |bc, from| {
+        let confirmed_conn = self.retry_send(msg, addr, |bc, from| {
                 trace!("msg: {:?}", &bc);
                 match bc {
                     // Match on sid/cid like client_initiated_dev does. Through a VPN
@@ -858,7 +860,7 @@ impl Discoverer {
                             );
                             Some(Err(Error::Other("Camera refused the connection")))
                         } else {
-                            Some(Ok(()))
+                            Some(Ok(cfm.conn.clone()))
                         }
                     }
                     UdpDiscovery {
@@ -893,7 +895,9 @@ impl Discoverer {
             camera_id: local_did,
         };
 
-        // Confirm map to register
+        // Confirm to register with the connection type the camera confirmed. Through
+        // a VPN tunnel the camera answers a "local" D2C_T with a "map" D2C_CFM, and
+        // reporting "local" left the camera silent once the session started.
         let msg = UdpDiscovery {
             tid: 0,
             payload: UdpXml::C2rCfm(C2rCfm {
@@ -901,7 +905,7 @@ impl Discoverer {
                 cid: result.client_id,
                 did: result.camera_id,
                 rsp: 0,
-                conn: "map".to_string(),
+                conn: confirmed_conn,
             }),
         };
 
